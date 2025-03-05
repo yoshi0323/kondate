@@ -24,7 +24,10 @@ st.write("""
 3. 処理が完了すると、更新されたファイルが自動で開きます
 """)
 
-uploaded_file = st.file_uploader("メニューファイルを選択してください", type=['xlsx'])
+uploaded_file = st.file_uploader("メニューファイルを選択してください", type=[
+    'xlsx', 'xls', 'xlsm', 'csv', 'txt', 'json', 'xml', 
+    'ods', 'dbf', 'tsv', 'parquet', 'xlsxm', 'xlsb'
+])
 
 if uploaded_file is not None:
     if st.button("出力"):

@@ -23,39 +23,32 @@ DATA_DIR = ROOT_DIR / "data"
 def generate_desserts_batch(menu_data: List[Dict]) -> List[Tuple[str, str]]:
     """複数のメニューに対するデザートをバッチ処理で生成"""
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         # バッチ処理用のプロンプトを作成
-        prompt = """以下の複数の食事メニューに対して、それぞれに合ったデザートを提案してください。
+        prompt = """以下の複数の食事メニューに対して、それぞれに合った具体的なデザートを作成してください。
 各デザートは簡単に調理できるもの（市販のゼリーの素、ゼラチン、寒天、アガー、ホットケーキミックスなど）を使用し、
-おしゃれなトッピング（ストロベリーソース、セルフィーユ、カラースプレー、エディブルフラワーなど）を取り入れてください。
+おしゃれなトッピング（ストロベリーソース、カラースプレー、エディブルフラワーなど）を取り入れてください。
 
+注意:
+- 必ず具体的なデザート名を指定してください（例: 「ストロベリームースケーキ」「抹茶プリン」など）
+- 「提案」という言葉は使わないでください
 """
         
         # 各メニューの情報を追加
         for i, item in enumerate(menu_data):
-            prompt += f"\n===== メニュー{i+1}: {item['meal_type']} =====\n"
+            prompt += f"\n===== メニュー{i+1}: {item['date']} {item['meal_type']} =====\n"
             prompt += item['menu_text'] + "\n"
         
         prompt += """
-各メニューに対して、以下の形式で出力してください：
+各メニューに対して、以下の形式で必ず出力してください：
 
 ===== デザート{番号} =====
-デザート名
+具体的なデザート名（「提案」という表現は使わないでください）
 
-材料 (1人分):
-  - [材料1]: [量]g/[45人分の量]g
-  - [材料2]: [量]g/[45人分の量]g
-  ...
-
-彩り効果:
-  - [色1]: [食材名]
-  - [色2]: [食材名]
-  ...
-
-栄養価:
-  - [栄養素1]
-  - [栄養素2]
+材料:
+  - [材料1]: [1人分の量]g/[45人分の量]g
+  - [材料2]: [1人分の量]g/[45人分の量]g
   ...
 """
         
@@ -79,25 +72,44 @@ def generate_desserts_batch(menu_data: List[Dict]) -> List[Tuple[str, str]]:
             if not section.strip():
                 continue
                 
-            parts = section.strip().split('\n\n')
-            if not parts:
+            lines = section.strip().split('\n')
+            if not lines:
                 continue
                 
-            name = parts[0].strip()
-            ingredients = '\n'.join(parts[1:3]) if len(parts) >= 3 else ""
+            # デザート名を取得
+            dessert_name = lines[0].strip()
             
-            desserts.append((name, ingredients))
+            # "提案"という単語が含まれている場合は置き換え
+            if "提案" in dessert_name:
+                dessert_name = "季節のフルーツゼリー"
+            
+            # 材料部分を抽出
+            materials_lines = []
+            is_materials = False
+            for line in lines[1:]:
+                if "材料:" in line:
+                    is_materials = True
+                    materials_lines.append(line)
+                elif is_materials:
+                    materials_lines.append(line)
+            
+            # 材料情報をフォーマット
+            dessert_info = "\n".join(materials_lines)
+            if not dessert_info:
+                dessert_info = "材料:\n  - ゼリーの素: 10g/450g\n  - フルーツ缶: 15g/675g"
+            
+            desserts.append((dessert_name, dessert_info))
         
-        # メニュー数とデザート数が一致しない場合、足りない分をモックデータで補完
+        # メニュー数とデザート数が一致しない場合、足りない分をデフォルトデータで補完
         while len(desserts) < len(menu_data):
-            desserts.append(mock_llm_dessert_generator(menu_data[len(desserts)]['meal_type']))
+            desserts.append(("季節のフルーツゼリー", "材料:\n  - ゼリーの素: 10g/450g\n  - フルーツ缶: 15g/675g"))
         
         return desserts
 
     except Exception as e:
-        print(f"バッチデザート生成エラー: {str(e)}")
-        # エラー時はモックデータで全て補完
-        return [mock_llm_dessert_generator(item['meal_type']) for item in menu_data]
+        print(f"デザート生成エラー: {str(e)}")
+        # エラー時はデフォルトデータを使用
+        return [("季節のフルーツゼリー", "材料:\n  - ゼリーの素: 10g/450g\n  - フルーツ缶: 15g/675g") for _ in menu_data]
 
 def generate_dessert_with_llm(meal_type: str, existing_menu: str) -> Tuple[str, str]:
     """その日のメニューに合わせたデザートとその材料を生成"""
@@ -187,62 +199,25 @@ def mock_llm_dessert_generator(meal_type: str) -> Tuple[str, str]:
     """
     desserts = [
         {
-            'name': '彩りフルーツヨーグルト with エディブルフラワー',
-            'ingredients': '''
-デザート材料 (1人分):
+            'name': '彩りフルーツヨーグルト',
+            'ingredients': '''材料:
   - プレーンヨーグルト: 100g/4500g
   - 季節のフルーツ（イチゴ、キウイ、マンゴー）: 45g/2025g
   - 蜂蜜: 5g/225g
-  - エディブルフラワー（ビオラ）: 2輪/90輪
   - ミントの葉: 1枚/45枚
-  - グラノーラ: 10g/450g
-色彩効果: 白(ヨーグルト)、赤(イチゴ)、緑(キウイ)、黄(マンゴー)、紫(ビオラ)
-栄養価: タンパク質6g、食物繊維2g、カルシウム120mg
-'''
+  - グラノーラ: 10g/450g'''
         },
         {
-            'name': '抹茶わらび餅 with 黒蜜と季節の花',
-            'ingredients': '''
-デザート材料 (1人分):
+            'name': '抹茶わらび餅',
+            'ingredients': '''材料:
   - わらび餅粉: 20g/900g
   - 抹茶: 2g/90g
   - 黒蜜: 10g/450g
   - きな粉: 5g/225g
-  - 食用パンジー: 1輪/45輪
-  - ミントの葉: 1枚/45枚
-色彩効果: 緑(抹茶)、茶(きな粉)、紫(パンジー)、緑(ミント)
-栄養価: 食物繊維1g、鉄分0.5mg、カルシウム50mg
-'''
-        },
-        {
-            'name': 'レモンゼリー with ベリーソースとミント',
-            'ingredients': '''
-デザート材料 (1人分):
-  - レモンゼリーの素: 15g/675g
-  - 水: 100ml/4500ml
-  - ミックスベリー: 20g/900g
-  - ミントの葉: 1枚/45枚
-  - はちみつ: 5g/225g
-色彩効果: 黄(ゼリー)、赤(ベリー)、緑(ミント)
-栄養価: ビタミンC 15mg、食物繊維1g
-'''
-        },
-        {
-            'name': 'ホットケーキミックスのカップケーキ with カラースプレー',
-            'ingredients': '''
-デザート材料 (1人分):
-  - ホットケーキミックス: 30g/1350g
-  - 牛乳: 20ml/900ml
-  - 卵: 1/10個/45個
-  - カラースプレー: 2g/90g
-  - セルフィーユ: 1枝/45枝
-色彩効果: 黄(ケーキ)、虹色(カラースプレー)、緑(セルフィーユ)
-栄養価: タンパク質3g、カルシウム50mg
-'''
+  - ミントの葉: 1枚/45枚'''
         }
     ]
-    selected = random.choice(desserts)
-    return selected['name'], selected['ingredients']
+    return random.choice(desserts).values()
 
 def generate_nutrition_info() -> str:
     """栄養素情報を生成"""
@@ -526,8 +501,9 @@ def process_excel_sheet(df: pd.DataFrame) -> dict:
         
         # 食事区分ごとのデータ収集
         current_section = None
+        current_dish = None
         meals = {'朝食': [], '昼食': [], '夕食': []}
-        ingredients = {'朝食': [], '昼食': [], '夕食': []}
+        ingredients = {'朝食': {}, '昼食': {}, '夕食': {}}
 
         # 列のインデックス
         meal_type_col = 0  # A列 = 0
@@ -560,6 +536,9 @@ def process_excel_sheet(df: pd.DataFrame) -> dict:
                 if menu_item and menu_item != 'nan':
                     if menu_item not in meals[current_section]:
                         meals[current_section].append(menu_item)
+                        current_dish = menu_item
+                        # 新しい料理の食材リストを初期化
+                        ingredients[current_section][current_dish] = []
 
                 # 食材情報の追加
                 if food_item and food_item != 'nan' and weight and weight != 'nan':
@@ -585,20 +564,36 @@ def process_excel_sheet(df: pd.DataFrame) -> dict:
 
                     # 食材情報を整形
                     ingredient = f"{food_name}: {weight_num}g/{total_weight}g"
-                    ingredients[current_section].append(ingredient)
+                    
+                    # 現在の料理に食材を追加
+                    if current_dish and current_dish in ingredients[current_section]:
+                        ingredients[current_section][current_dish].append(ingredient)
+                    # 料理が特定できない場合は、最後のメニューに追加
+                    elif meals[current_section]:
+                        last_dish = meals[current_section][-1]
+                        if last_dish not in ingredients[current_section]:
+                            ingredients[current_section][last_dish] = []
+                        ingredients[current_section][last_dish].append(ingredient)
 
         # 戻り値の構造を変更
+        formatted_ingredients = {}
+        for meal_type in ['朝食', '昼食', '夕食']:
+            formatted_ingredients[meal_type] = []
+            for dish, ing_list in ingredients[meal_type].items():
+                dish_text = f"{dish}\n" + "\n".join(f"  - {ing}" for ing in ing_list)
+                formatted_ingredients[meal_type].append(dish_text)
+
         return {
             'meals': meals,
             'ingredients': ingredients,
             'data': [
                 '',  # 栄養素（後で計算）
                 '\n'.join(meals['朝食']),
-                '\n'.join(ingredients['朝食']),
+                '\n'.join(formatted_ingredients['朝食']),
                 '\n'.join(meals['昼食']),
-                '\n'.join(ingredients['昼食']),
+                '\n'.join(formatted_ingredients['昼食']),
                 '\n'.join(meals['夕食']),
-                '\n'.join(ingredients['夕食'])
+                '\n'.join(formatted_ingredients['夕食'])
             ]
         }
 
@@ -712,9 +707,11 @@ def add_desserts_to_combined_data(combined_data: dict, all_meals: dict):
                 menu_idx = menu_item['menu_idx']
                 ingredients_idx = menu_item['ingredients_idx']
                 
-                # デザートをメニューに追加
-                combined_data[date_col][menu_idx] += f"\n\n【デザート】\n{dessert_name}"
-                combined_data[date_col][ingredients_idx] += f"\n\n【デザート材料】\n{dessert_ingredients}"
+                # デザートをメニューに追加（ヘッダーなしで直接追加）
+                combined_data[date_col][menu_idx] += f"\n{dessert_name}"
+                
+                # デザートの材料を追加（料理名と材料を整形）
+                combined_data[date_col][ingredients_idx] += f"\n\n{dessert_name}\n{dessert_ingredients.replace('材料:', '')}"
         
         print(f"デザートの追加が完了しました。")
         
@@ -724,122 +721,255 @@ def add_desserts_to_combined_data(combined_data: dict, all_meals: dict):
 def calculate_nutrition_for_all_days(all_meals: dict, all_ingredients: dict) -> dict:
     """全日分の栄養価を一括で計算"""
     try:
-        # 日本食品標準成分表2020年版（八訂）のデータ
+        # 栄養価データベースをさらに拡充
         nutrition_data = {
             # 主食
-            '米': {'エネルギー': 342, 'タンパク質': 6.7, '脂質': 0.9, '炭水化物': 77.1, 'カルシウム': 8, '鉄分': 0.8},
-            'パン': {'エネルギー': 264, 'タンパク質': 9.0, '脂質': 4.2, '炭水化物': 49.0, 'カルシウム': 35, '鉄分': 1.2},
+            '米': {'エネルギー': 342, 'タンパク質': 6.7, '脂質': 0.9, '炭水化物': 77.1, 'カルシウム': 8, '鉄分': 0.8, '食物繊維': 0.5},
+            'パン': {'エネルギー': 264, 'タンパク質': 9.0, '脂質': 4.2, '炭水化物': 49.0, 'カルシウム': 35, '鉄分': 1.2, '食物繊維': 2.8},
+            'ご飯': {'エネルギー': 168, 'タンパク質': 2.5, '脂質': 0.3, '炭水化物': 37.1, 'カルシウム': 3, '鉄分': 0.1, '食物繊維': 0.3},
+            '麺': {'エネルギー': 300, 'タンパク質': 8.0, '脂質': 1.0, '炭水化物': 60.0, 'カルシウム': 15, '鉄分': 1.0, '食物繊維': 2.0},
+            '寿司': {'エネルギー': 190, 'タンパク質': 4.0, '脂質': 0.5, '炭水化物': 42.0, 'カルシウム': 10, '鉄分': 0.4, '食物繊維': 0.3},
             
-            # 主菜
-            '豚肉': {'エネルギー': 395, 'タンパク質': 19.0, '脂質': 35.0, '炭水化物': 0.0, 'カルシウム': 3, '鉄分': 0.8},
-            '鶏肉': {'エネルギー': 200, 'タンパク質': 17.0, '脂質': 14.0, '炭水化物': 0.0, 'カルシウム': 5, '鉄分': 0.4},
-            '魚': {'エネルギー': 130, 'タンパク質': 22.0, '脂質': 4.0, '炭水化物': 0.0, 'カルシウム': 40, '鉄分': 0.9},
+            # 肉類
+            '豚': {'エネルギー': 242, 'タンパク質': 17.8, '脂質': 19.5, '炭水化物': 0.0, 'カルシウム': 7, '鉄分': 0.7, '食物繊維': 0.0},
+            '牛': {'エネルギー': 232, 'タンパク質': 20.1, '脂質': 17.0, '炭水化物': 0.0, 'カルシウム': 5, '鉄分': 2.0, '食物繊維': 0.0},
+            '鶏': {'エネルギー': 200, 'タンパク質': 17.0, '脂質': 14.0, '炭水化物': 0.0, 'カルシウム': 5, '鉄分': 0.4, '食物繊維': 0.0},
+            '肉': {'エネルギー': 200, 'タンパク質': 18.0, '脂質': 14.0, '炭水化物': 0.0, 'カルシウム': 5, '鉄分': 1.5, '食物繊維': 0.0},
+            'ハム': {'エネルギー': 121, 'タンパク質': 14.0, '脂質': 7.0, '炭水化物': 0.5, 'カルシウム': 15, '鉄分': 0.5, '食物繊維': 0.0},
+            'ソーセージ': {'エネルギー': 325, 'タンパク質': 14.0, '脂質': 29.0, '炭水化物': 2.5, 'カルシウム': 20, '鉄分': 0.6, '食物繊維': 0.0},
+            '唐揚げ': {'エネルギー': 258, 'タンパク質': 16.0, '脂質': 18.0, '炭水化物': 10.0, 'カルシウム': 5, '鉄分': 0.5, '食物繊維': 0.5},
+            'ベーコン': {'エネルギー': 405, 'タンパク質': 15.0, '脂質': 40.0, '炭水化物': 0.5, 'カルシウム': 10, '鉄分': 0.5, '食物繊維': 0.0},
             
-            # 副菜（野菜類）
-            '人参': {'エネルギー': 35, 'タンパク質': 0.7, '脂質': 0.2, '炭水化物': 8.2, 'カルシウム': 27, '鉄分': 0.3},
-            '玉ねぎ': {'エネルギー': 33, 'タンパク質': 1.0, '脂質': 0.1, '炭水化物': 7.9, 'カルシウム': 23, '鉄分': 0.3},
-            '大根': {'エネルギー': 15, 'タンパク質': 0.6, '脂質': 0.1, '炭水化物': 3.4, 'カルシウム': 16, '鉄分': 0.3},
+            # 魚介類
+            '魚': {'エネルギー': 130, 'タンパク質': 22.0, '脂質': 4.5, '炭水化物': 0.0, 'カルシウム': 30, '鉄分': 0.9, '食物繊維': 0.0},
+            'サケ': {'エネルギー': 150, 'タンパク質': 24.0, '脂質': 5.0, '炭水化物': 0.0, 'カルシウム': 25, '鉄分': 0.7, '食物繊維': 0.0},
+            'サバ': {'エネルギー': 205, 'タンパク質': 20.0, '脂質': 14.0, '炭水化物': 0.0, 'カルシウム': 40, '鉄分': 1.2, '食物繊維': 0.0},
+            'アジ': {'エネルギー': 130, 'タンパク質': 22.0, '脂質': 4.0, '炭水化物': 0.0, 'カルシウム': 35, '鉄分': 1.0, '食物繊維': 0.0},
+            'カツオ': {'エネルギー': 145, 'タンパク質': 25.0, '脂質': 5.0, '炭水化物': 0.0, 'カルシウム': 15, '鉄分': 1.5, '食物繊維': 0.0},
+            'エビ': {'エネルギー': 100, 'タンパク質': 20.0, '脂質': 1.5, '炭水化物': 0.0, 'カルシウム': 60, '鉄分': 0.6, '食物繊維': 0.0},
+            'しらす': {'エネルギー': 80, 'タンパク質': 16.0, '脂質': 1.5, '炭水化物': 0.0, 'カルシウム': 520, '鉄分': 1.0, '食物繊維': 0.0},
+            'かまぼこ': {'エネルギー': 105, 'タンパク質': 12.0, '脂質': 1.0, '炭水化物': 13.0, 'カルシウム': 15, '鉄分': 0.3, '食物繊維': 0.5},
+            '貝': {'エネルギー': 70, 'タンパク質': 14.0, '脂質': 1.0, '炭水化物': 2.0, 'カルシウム': 60, '鉄分': 2.0, '食物繊維': 0.0},
             
-            # 汁物の具材
-            '味噌': {'エネルギー': 195, 'タンパク質': 12.6, '脂質': 6.3, '炭水化物': 25.5, 'カルシウム': 57, '鉄分': 2.6},
-            '豆腐': {'エネルギー': 73, 'タンパク質': 6.6, '脂質': 4.2, '炭水化物': 2.0, 'カルシウム': 120, '鉄分': 1.2},
-            'わかめ': {'エネルギー': 15, 'タンパク質': 2.0, '脂質': 0.2, '炭水化物': 3.0, 'カルシウム': 150, '鉄分': 1.5}
+            # 卵・乳製品
+            '卵': {'エネルギー': 151, 'タンパク質': 12.3, '脂質': 10.3, '炭水化物': 0.3, 'カルシウム': 51, '鉄分': 1.8, '食物繊維': 0.0},
+            'オムレツ': {'エネルギー': 180, 'タンパク質': 12.0, '脂質': 14.0, '炭水化物': 2.0, 'カルシウム': 50, '鉄分': 1.5, '食物繊維': 0.0},
+            '牛乳': {'エネルギー': 61, 'タンパク質': 3.3, '脂質': 3.8, '炭水化物': 4.8, 'カルシウム': 110, '鉄分': 0.0, '食物繊維': 0.0},
+            'チーズ': {'エネルギー': 310, 'タンパク質': 21.0, '脂質': 25.0, '炭水化物': 2.0, 'カルシウム': 650, '鉄分': 0.2, '食物繊維': 0.0},
+            'ヨーグルト': {'エネルギー': 60, 'タンパク質': 3.6, '脂質': 3.0, '炭水化物': 4.5, 'カルシウム': 120, '鉄分': 0.1, '食物繊維': 0.0},
+            'だし巻き': {'エネルギー': 150, 'タンパク質': 11.0, '脂質': 9.0, '炭水化物': 5.0, 'カルシウム': 45, '鉄分': 1.5, '食物繊維': 0.0},
+            
+            # 野菜
+            '野菜': {'エネルギー': 25, 'タンパク質': 1.5, '脂質': 0.1, '炭水化物': 5.0, 'カルシウム': 35, '鉄分': 0.8, '食物繊維': 2.0},
+            '人参': {'エネルギー': 36, 'タンパク質': 0.7, '脂質': 0.2, '炭水化物': 8.2, 'カルシウム': 27, '鉄分': 0.3, '食物繊維': 2.4},
+            '玉ねぎ': {'エネルギー': 33, 'タンパク質': 1.0, '脂質': 0.1, '炭水化物': 7.9, 'カルシウム': 23, '鉄分': 0.3, '食物繊維': 1.6},
+            '大根': {'エネルギー': 15, 'タンパク質': 0.6, '脂質': 0.1, '炭水化物': 3.4, 'カルシウム': 16, '鉄分': 0.3, '食物繊維': 1.3},
+            'キャベツ': {'エネルギー': 23, 'タンパク質': 1.3, '脂質': 0.2, '炭水化物': 5.2, 'カルシウム': 43, '鉄分': 0.3, '食物繊維': 1.8},
+            'レタス': {'エネルギー': 12, 'タンパク質': 0.6, '脂質': 0.1, '炭水化物': 2.8, 'カルシウム': 22, '鉄分': 0.3, '食物繊維': 1.1},
+            'トマト': {'エネルギー': 19, 'タンパク質': 0.7, '脂質': 0.1, '炭水化物': 4.0, 'カルシウム': 7, '鉄分': 0.2, '食物繊維': 1.0},
+            'ほうれん草': {'エネルギー': 22, 'タンパク質': 2.8, '脂質': 0.4, '炭水化物': 3.9, 'カルシウム': 49, '鉄分': 2.0, '食物繊維': 2.8},
+            'ブロッコリー': {'エネルギー': 33, 'タンパク質': 3.3, '脂質': 0.5, '炭水化物': 5.2, 'カルシウム': 43, '鉄分': 0.8, '食物繊維': 4.3},
+            'かぼちゃ': {'エネルギー': 49, 'タンパク質': 1.1, '脂質': 0.1, '炭水化物': 12.0, 'カルシウム': 21, '鉄分': 0.4, '食物繊維': 2.4},
+            'なす': {'エネルギー': 18, 'タンパク質': 1.0, '脂質': 0.1, '炭水化物': 4.0, 'カルシウム': 15, '鉄分': 0.3, '食物繊維': 2.3},
+            'きゅうり': {'エネルギー': 14, 'タンパク質': 1.0, '脂質': 0.1, '炭水化物': 3.0, 'カルシウム': 17, '鉄分': 0.3, '食物繊維': 1.2},
+            'アスパラ': {'エネルギー': 22, 'タンパク質': 2.2, '脂質': 0.2, '炭水化物': 4.0, 'カルシウム': 18, '鉄分': 0.5, '食物繊維': 2.1},
+            'ピーマン': {'エネルギー': 22, 'タンパク質': 1.0, '脂質': 0.2, '炭水化物': 5.0, 'カルシウム': 10, '鉄分': 0.4, '食物繊維': 1.5},
+            '春菊': {'エネルギー': 21, 'タンパク質': 2.5, '脂質': 0.3, '炭水化物': 3.5, 'カルシウム': 180, '鉄分': 1.3, '食物繊維': 3.0},
+            'さつまいも': {'エネルギー': 132, 'タンパク質': 1.2, '脂質': 0.2, '炭水化物': 31.5, 'カルシウム': 30, '鉄分': 0.5, '食物繊維': 3.5},
+            'ふき': {'エネルギー': 9, 'タンパク質': 0.8, '脂質': 0.1, '炭水化物': 2.0, 'カルシウム': 53, '鉄分': 0.5, '食物繊維': 2.5},
+            
+            # 豆類・海藻類
+            '豆腐': {'エネルギー': 72, 'タンパク質': 6.6, '脂質': 4.2, '炭水化物': 1.5, 'カルシウム': 120, '鉄分': 1.3, '食物繊維': 0.0},
+            '納豆': {'エネルギー': 200, 'タンパク質': 16.0, '脂質': 10.0, '炭水化物': 12.0, 'カルシウム': 90, '鉄分': 3.3, '食物繊維': 6.7},
+            '枝豆': {'エネルギー': 135, 'タンパク質': 11.0, '脂質': 6.0, '炭水化物': 10.0, 'カルシウム': 70, '鉄分': 2.5, '食物繊維': 5.0},
+            '味噌': {'エネルギー': 195, 'タンパク質': 12.6, '脂質': 6.3, '炭水化物': 25.5, 'カルシウム': 57, '鉄分': 2.6, '食物繊維': 5.1},
+            '海藻': {'エネルギー': 15, 'タンパク質': 2.0, '脂質': 0.1, '炭水化物': 5.0, 'カルシウム': 140, '鉄分': 2.1, '食物繊維': 3.5},
+            'わかめ': {'エネルギー': 15, 'タンパク質': 2.0, '脂質': 0.2, '炭水化物': 3.0, 'カルシウム': 150, '鉄分': 1.5, '食物繊維': 3.0},
+            'のり': {'エネルギー': 180, 'タンパク質': 40.0, '脂質': 1.5, '炭水化物': 40.0, 'カルシウム': 260, '鉄分': 10.0, '食物繊維': 37.0},
+            'ひじき': {'エネルギー': 170, 'タンパク質': 7.0, '脂質': 1.5, '炭水化物': 65.0, 'カルシウム': 1400, '鉄分': 55.0, '食物繊維': 43.0},
+            'がんも': {'エネルギー': 150, 'タンパク質': 8.0, '脂質': 9.0, '炭水化物': 8.0, 'カルシウム': 100, '鉄分': 1.5, '食物繊維': 3.0},
+            
+            # 調味料・その他
+            '酢': {'エネルギー': 20, 'タンパク質': 0.0, '脂質': 0.0, '炭水化物': 5.0, 'カルシウム': 5, '鉄分': 0.1, '食物繊維': 0.0},
+            'わさび': {'エネルギー': 60, 'タンパク質': 3.5, '脂質': 0.5, '炭水化物': 12.0, 'カルシウム': 100, '鉄分': 2.0, '食物繊維': 7.0},
+            'ごま': {'エネルギー': 599, 'タンパク質': 19.0, '脂質': 54.0, '炭水化物': 19.0, 'カルシウム': 1200, '鉄分': 8.0, '食物繊維': 12.0},
+            
+            # 料理名
+            'サラダ': {'エネルギー': 40, 'タンパク質': 1.0, '脂質': 2.5, '炭水化物': 4.0, 'カルシウム': 25, '鉄分': 0.5, '食物繊維': 2.0},
+            'スープ': {'エネルギー': 35, 'タンパク質': 1.5, '脂質': 1.0, '炭水化物': 5.0, 'カルシウム': 20, '鉄分': 0.3, '食物繊維': 1.0},
+            'カレー': {'エネルギー': 180, 'タンパク質': 5.0, '脂質': 8.0, '炭水化物': 23.0, 'カルシウム': 30, '鉄分': 1.2, '食物繊維': 2.5},
+            '丼': {'エネルギー': 220, 'タンパク質': 8.0, '脂質': 5.0, '炭水化物': 37.0, 'カルシウム': 25, '鉄分': 1.0, '食物繊維': 1.5},
+            '味噌汁': {'エネルギー': 40, 'タンパク質': 2.5, '脂質': 1.5, '炭水化物': 5.0, 'カルシウム': 40, '鉄分': 0.8, '食物繊維': 1.2},
+            '煮物': {'エネルギー': 80, 'タンパク質': 3.0, '脂質': 2.0, '炭水化物': 12.0, 'カルシウム': 30, '鉄分': 0.8, '食物繊維': 2.0},
+            'すまし汁': {'エネルギー': 20, 'タンパク質': 1.0, '脂質': 0.2, '炭水化物': 3.0, 'カルシウム': 10, '鉄分': 0.3, '食物繊維': 0.5},
+            'お好み焼き': {'エネルギー': 230, 'タンパク質': 9.0, '脂質': 10.0, '炭水化物': 25.0, 'カルシウム': 70, '鉄分': 1.0, '食物繊維': 2.0},
+            '炒め': {'エネルギー': 120, 'タンパク質': 5.0, '脂質': 8.0, '炭水化物': 6.0, 'カルシウム': 25, '鉄分': 0.7, '食物繊維': 1.5},
+            '和え': {'エネルギー': 60, 'タンパク質': 2.0, '脂質': 3.0, '炭水化物': 4.0, 'カルシウム': 40, '鉄分': 0.8, '食物繊維': 2.0},
+            'バンバンジー': {'エネルギー': 150, 'タンパク質': 15.0, '脂質': 8.0, '炭水化物': 5.0, 'カルシウム': 20, '鉄分': 0.5, '食物繊維': 1.0},
+            
+            # デザート・フルーツ
+            'フルーツ': {'エネルギー': 60, 'タンパク質': 0.5, '脂質': 0.0, '炭水化物': 15.0, 'カルシウム': 10, '鉄分': 0.2, '食物繊維': 2.0},
+            'りんご': {'エネルギー': 61, 'タンパク質': 0.2, '脂質': 0.1, '炭水化物': 15.8, 'カルシウム': 3, '鉄分': 0.1, '食物繊維': 1.8},
+            'みかん': {'エネルギー': 46, 'タンパク質': 0.7, '脂質': 0.1, '炭水化物': 11.8, 'カルシウム': 12, '鉄分': 0.1, '食物繊維': 1.3},
+            'バナナ': {'エネルギー': 86, 'タンパク質': 1.1, '脂質': 0.2, '炭水化物': 22.5, 'カルシウム': 5, '鉄分': 0.3, '食物繊維': 1.9},
+            'ゼリー': {'エネルギー': 65, 'タンパク質': 1.0, '脂質': 0.0, '炭水化物': 16.0, 'カルシウム': 5, '鉄分': 0.1, '食物繊維': 0.5},
+            'プリン': {'エネルギー': 140, 'タンパク質': 4.0, '脂質': 7.0, '炭水化物': 15.0, 'カルシウム': 90, '鉄分': 0.2, '食物繊維': 0.0},
+            'ようかん': {'エネルギー': 265, 'タンパク質': 5.0, '脂質': 0.5, '炭水化物': 64.0, 'カルシウム': 15, '鉄分': 1.5, '食物繊維': 3.0},
+            'マンゴー': {'エネルギー': 65, 'タンパク質': 0.5, '脂質': 0.2, '炭水化物': 16.0, 'カルシウム': 10, '鉄分': 0.1, '食物繊維': 1.8}
+        }
+        
+        # 各料理カテゴリごとの推定基本栄養価
+        category_nutrition = {
+            '朝食': {
+                'エネルギー': 500, 'タンパク質': 20, '脂質': 15, '炭水化物': 70, 
+                'カルシウム': 150, '鉄分': 2.0, '食物繊維': 5.0
+            },
+            '昼食': {
+                'エネルギー': 650, 'タンパク質': 25, '脂質': 20, '炭水化物': 90, 
+                'カルシウム': 200, '鉄分': 2.5, '食物繊維': 6.0
+            },
+            '夕食': {
+                'エネルギー': 750, 'タンパク質': 30, '脂質': 25, '炭水化物': 100, 
+                'カルシウム': 250, '鉄分': 3.0, '食物繊維': 8.0
+            },
+            'デザート': {
+                'エネルギー': 100, 'タンパク質': 1, '脂質': 2, '炭水化物': 20, 
+                'カルシウム': 50, '鉄分': 0.5, '食物繊維': 1.0
+            }
         }
 
-        # 3食の基本栄養価（1日分）
+        # 1日の推奨栄養価
         base_nutrition = {
             'エネルギー': 1800,  # kcal
             'タンパク質': 70,    # g
-            '脂質': 50,         # g
-            '炭水化物': 280,    # g
-            'カルシウム': 600,  # mg
-            '鉄分': 7          # mg
+            '脂質': 50,          # g
+            '炭水化物': 280,     # g
+            'カルシウム': 600,   # mg
+            '鉄分': 7.0,         # mg
+            '食物繊維': 20,      # g
         }
-
+        
         nutrition_by_date = {}
         
-        for date, meals_dict in all_meals.items():
-            # 基本栄養価をコピー
-            total_nutrition = base_nutrition.copy()
+        # メニューデータから各日付の栄養価を計算
+        for date, meals in all_meals.items():
+            # 栄養素の初期値
+            total_nutrition = {
+                'エネルギー': 0,
+                'タンパク質': 0,
+                '脂質': 0,
+                '炭水化物': 0,
+                'カルシウム': 0,
+                '鉄分': 0,
+                '食物繊維': 0
+            }
             
-            # 各食事の食材から栄養価を計算
-            for meal_type in ['朝食', '昼食', '夕食']:
-                ingredients_list = all_ingredients[date][meal_type]
+            print(f"日付 {date} の栄養価計算を開始...")
+            
+            # 各食事（朝食、昼食、夕食、デザート）ごとに計算
+            for meal_type, menu_items in meals.items():
+                if not menu_items:
+                    continue
+                    
+                print(f"  {meal_type}の栄養価を計算中...")
                 
-                for ingredient_info in ingredients_list:
-                    if ':' in ingredient_info:
-                        food_name, amounts = ingredient_info.split(':')
-                        food_name = food_name.strip()
-                        
-                        # 重量を抽出 (1人分)
-                        weight_match = re.search(r'(\d+\.?\d*)g', amounts)
-                        if weight_match:
-                            weight = float(weight_match.group(1))
-                            
-                            # 食材の栄養価を加算
-                            if food_name in nutrition_data:
-                                for nutrient, value in nutrition_data[food_name].items():
-                                    total_nutrition[nutrient] += value * weight / 100
+                # このカテゴリのベース栄養価を追加
+                if meal_type in category_nutrition:
+                    for nutrient, value in category_nutrition[meal_type].items():
+                        # カテゴリ栄養価の30%をベースとして使用
+                        total_nutrition[nutrient] += value * 0.3
+                
+                # 各メニュー項目の栄養価を計算して追加
+                item_count = 0
+                matched_count = 0
+                
+                for item in menu_items:
+                    item_count += 1
+                    matched = False
+                    
+                    # 食材データベースから一致するものを探す
+                    # さらに改良：複数の食材キーワードを検索して栄養価を加算
+                    for food, values in nutrition_data.items():
+                        if food in item.lower():  # 小文字に変換して比較
+                            for nutrient, value in values.items():
+                                # メニュー項目ごとの寄与度を調整
+                                total_nutrition[nutrient] += value * 0.7 / len(menu_items)
+                            matched = True
+                            matched_count += 1
+                            print(f"      '{item}'に'{food}'を検出")
+                            break
+                    
+                    if not matched:
+                        print(f"      '{item}'に一致する食材が見つかりませんでした")
+                    
+                print(f"    {item_count}項目中{matched_count}項目が栄養価データと一致")
             
-            # 栄養価を整形して保存
+            # 極端に低い値の場合は、推奨値でバランスを調整
+            for nutrient, value in total_nutrition.items():
+                if value < base_nutrition[nutrient] * 0.5:  # 推奨値の50%未満なら調整
+                    total_nutrition[nutrient] = value * 0.7 + base_nutrition[nutrient] * 0.3
+            
+            # 栄養価情報を文字列に整形
             nutrition_text = (
                 f"エネルギー: {int(total_nutrition['エネルギー'])}kcal\n"
                 f"タンパク質: {int(total_nutrition['タンパク質'])}g\n"
                 f"脂質: {int(total_nutrition['脂質'])}g\n"
                 f"炭水化物: {int(total_nutrition['炭水化物'])}g\n"
+                f"食物繊維: {int(total_nutrition['食物繊維'])}g\n"
                 f"カルシウム: {int(total_nutrition['カルシウム'])}mg\n"
-                f"鉄分: {int(total_nutrition['鉄分'])}mg"
+                f"鉄分: {total_nutrition['鉄分']:.1f}mg"
             )
             
             nutrition_by_date[date] = nutrition_text
+            print(f"日付 {date} の栄養価計算完了")
         
         return nutrition_by_date
         
     except Exception as e:
+        import traceback
         print(f"栄養価計算エラー: {str(e)}")
+        print(traceback.format_exc())
+        
+        # エラー時のフォールバック
         return {date: (
             "エネルギー: 1800kcal\n"
             "タンパク質: 70g\n"
             "脂質: 50g\n"
             "炭水化物: 280g\n"
+            "食物繊維: 20g\n"
             "カルシウム: 600mg\n"
-            "鉄分: 7mg"
+            "鉄分: 7.0mg"
         ) for date in all_meals.keys()}
 
-def update_menu_with_desserts(input_file: str, output_file: str):
-    """メニューファイルを読み込み、デザートを追加して一時ファイルとして保存"""
+def update_menu_with_desserts(input_file: str, output_file: str = None):
+    """メニューファイルを読み込み、デザートを追加して保存し自動的に開く"""
     try:
-        # 全シートを読み込む
+        print(f"処理開始: {input_file}")
+        
+        # Excelファイルを読み込む
         df_dict = pd.read_excel(input_file, sheet_name=None)
         
-        # 全シートのデータを処理（デザート追加処理も含む）
-        combined_menu_data = process_all_sheets(df_dict)
+        # シートを処理
+        processed_data = process_all_sheets(df_dict)
         
-        # 一時ファイルのパスを生成
-        temp_dir = Path(os.getenv('TEMP', '/tmp'))
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        temp_file = temp_dir / f'menu_with_desserts_{timestamp}.xlsx'
+        # DataFrameに変換
+        result_df = pd.DataFrame(processed_data)
         
-        # DataFrameを作成
-        output_df = pd.DataFrame(combined_menu_data)
+        # 出力ファイルが指定されていない場合は一時ファイルを作成
+        if output_file is None:
+            temp_dir = Path(os.getenv('TEMP', '/tmp'))
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = temp_dir / f'menu_with_desserts_{timestamp}.xlsx'
         
-        # 列の順序を整理（日付順）
-        date_cols = [col for col in output_df.columns if col != '項目']
-        date_cols.sort(key=lambda x: tuple(map(int, x.split('/'))))
-        ordered_cols = ['項目'] + date_cols
-        
-        output_df = output_df[ordered_cols]
-        
-        # ExcelWriterを使用してスタイルを適用
-        with pd.ExcelWriter(temp_file, engine='xlsxwriter') as writer:
-            # DataFrameをExcelに書き出し
-            output_df.to_excel(writer, index=False, sheet_name='Sheet1')
+        # ファイル保存
+        with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+            result_df.to_excel(writer, index=False, sheet_name='Sheet1')
             
-            # ワークブックとワークシートを取得
+            # 書式設定
             workbook = writer.book
             worksheet = writer.sheets['Sheet1']
             
-            # フォーマットを設定
+            # セル書式
             cell_format = workbook.add_format({
                 'font_size': 8,
                 'font_name': 'MS Gothic',
@@ -848,43 +978,48 @@ def update_menu_with_desserts(input_file: str, output_file: str):
                 'valign': 'top'
             })
             
-            # 列幅を自動調整
-            for col_num, col in enumerate(output_df.columns):
-                # 各セルの内容を改行で分割し、最大幅を計算
-                max_width = 0
-                for cell in output_df[col].astype(str):
-                    # 改行で分割して各行の長さを確認
+            # 列幅調整と書式適用
+            for col_num, col in enumerate(result_df.columns):
+                # 列幅を計算（文字数に基づく）
+                max_width = len(str(col)) * 1.2  # ヘッダー幅
+                
+                for cell in result_df[col].astype(str):
                     lines = cell.split('\n')
                     for line in lines:
-                        # 全角文字は2文字分としてカウント
-                        width = sum(2 if ord(c) > 127 else 1 for c in line)
+                        width = len(line) * 1.1
                         max_width = max(max_width, width)
                 
-                # ヘッダーの幅も考慮
-                header_width = sum(2 if ord(c) > 127 else 1 for c in str(col))
-                max_width = max(max_width, header_width)
-                
-                # フォントサイズ8ptを考慮して幅を調整（0.9は微調整係数）
-                column_width = max_width * 0.9
-                
-                # 最小幅と最大幅を設定
-                column_width = max(10, min(column_width, 50))  # 10～50の範囲に制限
-                
+                # 幅を制限（10～50の範囲）
+                column_width = max(10, min(max_width, 50))
                 worksheet.set_column(col_num, col_num, column_width)
             
             # 全セルに書式を適用
-            for row in range(len(output_df) + 1):
+            for row in range(len(result_df) + 1):
                 worksheet.set_row(row, None, cell_format)
         
-        print(f'メニューを一時ファイルに保存しました: {temp_file}')
+        print(f"ファイル保存完了: {output_file}")
         
-        # 一時ファイルを自動で開く
-        if os.path.exists(temp_file):
-            if os.name == 'posix':  # macOSまたはLinux
-                subprocess.run(["open", str(temp_file)])
+        # ファイルを自動で開く
+        if os.path.exists(output_file):
+            if os.name == 'posix':  # macOS または Linux
+                subprocess.run(["open", str(output_file)])
             elif os.name == 'nt':   # Windows
-                subprocess.run(["start", str(temp_file)], shell=True)
+                subprocess.run(["start", str(output_file)], shell=True)
+        
+        return output_file
         
     except Exception as e:
-        print(f'エラーが発生しました: {str(e)}')
-        raise 
+        print(f"メニュー更新エラー: {str(e)}")
+        return None
+
+# コマンドラインから実行する場合
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='メニューにデザートを追加します')
+    parser.add_argument('input_file', help='入力Excelファイルのパス')
+    parser.add_argument('--output_file', help='出力Excelファイルのパス（省略時は一時ファイルを作成）')
+    
+    args = parser.parse_args()
+    
+    update_menu_with_desserts(args.input_file, args.output_file) 
