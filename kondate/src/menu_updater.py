@@ -5,7 +5,7 @@ import random
 import subprocess
 import os
 from datetime import datetime
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 from dotenv import load_dotenv
 import re
 
@@ -19,6 +19,85 @@ genai.configure(api_key=GOOGLE_API_KEY)
 # プロジェクトのルートディレクトリを取得
 ROOT_DIR = Path(__file__).parent.parent
 DATA_DIR = ROOT_DIR / "data"
+
+def generate_desserts_batch(menu_data: List[Dict]) -> List[Tuple[str, str]]:
+    """複数のメニューに対するデザートをバッチ処理で生成"""
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        # バッチ処理用のプロンプトを作成
+        prompt = """以下の複数の食事メニューに対して、それぞれに合ったデザートを提案してください。
+各デザートは簡単に調理できるもの（市販のゼリーの素、ゼラチン、寒天、アガー、ホットケーキミックスなど）を使用し、
+おしゃれなトッピング（ストロベリーソース、セルフィーユ、カラースプレー、エディブルフラワーなど）を取り入れてください。
+
+"""
+        
+        # 各メニューの情報を追加
+        for i, item in enumerate(menu_data):
+            prompt += f"\n===== メニュー{i+1}: {item['meal_type']} =====\n"
+            prompt += item['menu_text'] + "\n"
+        
+        prompt += """
+各メニューに対して、以下の形式で出力してください：
+
+===== デザート{番号} =====
+デザート名
+
+材料 (1人分):
+  - [材料1]: [量]g/[45人分の量]g
+  - [材料2]: [量]g/[45人分の量]g
+  ...
+
+彩り効果:
+  - [色1]: [食材名]
+  - [色2]: [食材名]
+  ...
+
+栄養価:
+  - [栄養素1]
+  - [栄養素2]
+  ...
+"""
+        
+        # LLMに一括でリクエスト
+        response = model.generate_content(prompt)
+        
+        if not response.text:
+            raise ValueError("LLMの応答が空です")
+        
+        # 応答を解析してデザート情報を抽出
+        result = response.text.strip()
+        dessert_sections = re.split(r'===== デザート\d+ =====', result)
+        
+        # 最初の空セクションを削除
+        if dessert_sections and not dessert_sections[0].strip():
+            dessert_sections = dessert_sections[1:]
+        
+        # 各デザートの情報を抽出
+        desserts = []
+        for section in dessert_sections:
+            if not section.strip():
+                continue
+                
+            parts = section.strip().split('\n\n')
+            if not parts:
+                continue
+                
+            name = parts[0].strip()
+            ingredients = '\n'.join(parts[1:3]) if len(parts) >= 3 else ""
+            
+            desserts.append((name, ingredients))
+        
+        # メニュー数とデザート数が一致しない場合、足りない分をモックデータで補完
+        while len(desserts) < len(menu_data):
+            desserts.append(mock_llm_dessert_generator(menu_data[len(desserts)]['meal_type']))
+        
+        return desserts
+
+    except Exception as e:
+        print(f"バッチデザート生成エラー: {str(e)}")
+        # エラー時はモックデータで全て補完
+        return [mock_llm_dessert_generator(item['meal_type']) for item in menu_data]
 
 def generate_dessert_with_llm(meal_type: str, existing_menu: str) -> Tuple[str, str]:
     """その日のメニューに合わせたデザートとその材料を生成"""
@@ -53,6 +132,19 @@ def generate_dessert_with_llm(meal_type: str, existing_menu: str) -> Tuple[str, 
    - 盛り付けが効率的
    - 常温で30分程度の品質維持が可能
 
+5. 簡単に調理できるもの
+   - 市販のゼリーの素
+   - ゼラチン、寒天、アガー
+   - ホットケーキミックス
+   - 簡単に調理できる材料を使用
+
+6. おしゃれなトッピング
+   - ストロベリーソース
+   - セルフィーユ
+   - カラースプレー
+   - エディブルフラワー
+   - 少しおしゃれな要素を取り入れる
+
 以下の形式で出力してください：
 デザート名
 
@@ -81,7 +173,7 @@ def generate_dessert_with_llm(meal_type: str, existing_menu: str) -> Tuple[str, 
             name = parts[0].strip()
             ingredients = '\n'.join(parts[1:3])  # 材料部分のみ抽出
 
-        return name, ingredients
+            return name, ingredients
 
         raise ValueError("LLMの応答が不正な形式です")
 
@@ -98,12 +190,12 @@ def mock_llm_dessert_generator(meal_type: str) -> Tuple[str, str]:
             'name': '彩りフルーツヨーグルト with エディブルフラワー',
             'ingredients': '''
 デザート材料 (1人分):
-  - プレーンヨーグルト: 100g
-  - 季節のフルーツ（イチゴ、キウイ、マンゴー）: 45g
-  - 蜂蜜: 5g
-  - エディブルフラワー（ビオラ）: 2輪
-  - ミントの葉: 1枚
-  - グラノーラ: 10g
+  - プレーンヨーグルト: 100g/4500g
+  - 季節のフルーツ（イチゴ、キウイ、マンゴー）: 45g/2025g
+  - 蜂蜜: 5g/225g
+  - エディブルフラワー（ビオラ）: 2輪/90輪
+  - ミントの葉: 1枚/45枚
+  - グラノーラ: 10g/450g
 色彩効果: 白(ヨーグルト)、赤(イチゴ)、緑(キウイ)、黄(マンゴー)、紫(ビオラ)
 栄養価: タンパク質6g、食物繊維2g、カルシウム120mg
 '''
@@ -112,18 +204,45 @@ def mock_llm_dessert_generator(meal_type: str) -> Tuple[str, str]:
             'name': '抹茶わらび餅 with 黒蜜と季節の花',
             'ingredients': '''
 デザート材料 (1人分):
-  - わらび餅粉: 20g
-  - 抹茶: 2g
-  - 黒蜜: 10g
-  - きな粉: 5g
-  - 食用パンジー: 1輪
-  - ミントの葉: 1枚
+  - わらび餅粉: 20g/900g
+  - 抹茶: 2g/90g
+  - 黒蜜: 10g/450g
+  - きな粉: 5g/225g
+  - 食用パンジー: 1輪/45輪
+  - ミントの葉: 1枚/45枚
 色彩効果: 緑(抹茶)、茶(きな粉)、紫(パンジー)、緑(ミント)
 栄養価: 食物繊維1g、鉄分0.5mg、カルシウム50mg
 '''
+        },
+        {
+            'name': 'レモンゼリー with ベリーソースとミント',
+            'ingredients': '''
+デザート材料 (1人分):
+  - レモンゼリーの素: 15g/675g
+  - 水: 100ml/4500ml
+  - ミックスベリー: 20g/900g
+  - ミントの葉: 1枚/45枚
+  - はちみつ: 5g/225g
+色彩効果: 黄(ゼリー)、赤(ベリー)、緑(ミント)
+栄養価: ビタミンC 15mg、食物繊維1g
+'''
+        },
+        {
+            'name': 'ホットケーキミックスのカップケーキ with カラースプレー',
+            'ingredients': '''
+デザート材料 (1人分):
+  - ホットケーキミックス: 30g/1350g
+  - 牛乳: 20ml/900ml
+  - 卵: 1/10個/45個
+  - カラースプレー: 2g/90g
+  - セルフィーユ: 1枝/45枝
+色彩効果: 黄(ケーキ)、虹色(カラースプレー)、緑(セルフィーユ)
+栄養価: タンパク質3g、カルシウム50mg
+'''
         }
     ]
-    return random.choice(desserts).values()
+    selected = random.choice(desserts)
+    return selected['name'], selected['ingredients']
 
 def generate_nutrition_info() -> str:
     """栄養素情報を生成"""
@@ -540,12 +659,67 @@ def process_all_sheets(df_dict: dict) -> dict:
         for date_col in all_meals.keys():
             if date_col in nutrition_by_date:
                 combined_data[date_col][0] = nutrition_by_date[date_col]
+        
+        # デザートを一括で生成して追加
+        add_desserts_to_combined_data(combined_data, all_meals)
 
         return combined_data
 
     except Exception as e:
         print(f"\n!!! 全シート処理でエラーが発生しました: {str(e)}")
         raise
+
+def add_desserts_to_combined_data(combined_data: dict, all_meals: dict):
+    """全日分のデータにデザートを一括で追加"""
+    try:
+        # バッチ処理用のメニューデータを準備
+        batch_menu_data = []
+        
+        for date_col in [col for col in combined_data.keys() if col != '項目']:
+            # 昼食と夕食のメニューを取得
+            lunch_menu_idx = 3  # 昼食メニューのインデックス
+            dinner_menu_idx = 5  # 夕食メニューのインデックス
+            
+            lunch_menu = combined_data[date_col][lunch_menu_idx]
+            dinner_menu = combined_data[date_col][dinner_menu_idx]
+            
+            # バッチ処理用のデータに追加
+            batch_menu_data.append({
+                'date': date_col,
+                'meal_type': '昼食',
+                'menu_text': lunch_menu,
+                'menu_idx': lunch_menu_idx,
+                'ingredients_idx': lunch_menu_idx + 1
+            })
+            
+            batch_menu_data.append({
+                'date': date_col,
+                'meal_type': '夕食',
+                'menu_text': dinner_menu,
+                'menu_idx': dinner_menu_idx,
+                'ingredients_idx': dinner_menu_idx + 1
+            })
+        
+        # バッチでデザートを生成
+        print(f"デザートをバッチ処理で生成中... ({len(batch_menu_data)}件)")
+        desserts = generate_desserts_batch(batch_menu_data)
+        
+        # 生成したデザートをデータに追加
+        for i, menu_item in enumerate(batch_menu_data):
+            if i < len(desserts):
+                dessert_name, dessert_ingredients = desserts[i]
+                date_col = menu_item['date']
+                menu_idx = menu_item['menu_idx']
+                ingredients_idx = menu_item['ingredients_idx']
+                
+                # デザートをメニューに追加
+                combined_data[date_col][menu_idx] += f"\n\n【デザート】\n{dessert_name}"
+                combined_data[date_col][ingredients_idx] += f"\n\n【デザート材料】\n{dessert_ingredients}"
+        
+        print(f"デザートの追加が完了しました。")
+        
+    except Exception as e:
+        print(f"デザート追加エラー: {str(e)}")
 
 def calculate_nutrition_for_all_days(all_meals: dict, all_ingredients: dict) -> dict:
     """全日分の栄養価を一括で計算"""
@@ -638,7 +812,7 @@ def update_menu_with_desserts(input_file: str, output_file: str):
         # 全シートを読み込む
         df_dict = pd.read_excel(input_file, sheet_name=None)
         
-        # 全シートのデータを処理
+        # 全シートのデータを処理（デザート追加処理も含む）
         combined_menu_data = process_all_sheets(df_dict)
         
         # 一時ファイルのパスを生成

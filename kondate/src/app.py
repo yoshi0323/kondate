@@ -28,7 +28,7 @@ uploaded_file = st.file_uploader("メニューファイルを選択してくだ�
 
 if uploaded_file is not None:
     if st.button("出力"):
-        with st.spinner("デザートを追加中..."):
+        with st.spinner("出力中..."):
             try:
                 # 一時ファイルとして保存
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
