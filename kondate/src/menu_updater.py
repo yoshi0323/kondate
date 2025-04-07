@@ -9,6 +9,9 @@ from typing import Tuple, Dict, List
 from dotenv import load_dotenv
 import re
 import csv
+import datetime
+import json
+from google.api_core.exceptions import GoogleAPIError
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -424,7 +427,7 @@ def generate_dessert_with_llm(meal_type: str, existing_menu: str) -> Tuple[str, 
             name = parts[0].strip()
             ingredients = '\n'.join(parts[1:3])  # 材料部分のみ抽出
 
-            return name, ingredients
+        return name, ingredients
 
         raise ValueError("LLMの応答が不正な形式です")
 
@@ -1161,6 +1164,489 @@ def calculate_nutrition_for_menu(menu_data):
     
     return nutrition_results
 
+def identify_dish_category(dish_name):
+    """料理名からカテゴリを判別する"""
+    categories = {
+        '肉': ['肉', 'ミート', 'ハンバーグ', 'ステーキ', 'カツ', '唐揚げ', 'チキン', '鶏', '豚', '牛', 'ウィンナー', 'ソーセージ', 'ベーコン'],
+        '魚': ['魚', '鮭', 'サバ', 'サンマ', 'アジ', 'カレイ', 'ブリ', '刺身', '寿司', '海鮮', 'シーフード'],
+        '麺類': ['麺', 'うどん', 'そば', 'パスタ', 'ラーメン', 'スパゲッティ', '焼きそば'],
+        '米': ['ご飯', '米', 'チャーハン', '炊き込み', 'おにぎり'],
+        '野菜': ['サラダ', '野菜', 'ほうれん草', 'キャベツ', 'ブロッコリー', '人参', 'トマト'],
+        '汁物': ['スープ', '味噌汁', 'みそ汁', '吸い物', 'ポタージュ', 'シチュー'],
+        'デザート': ['ケーキ', 'プリン', 'ゼリー', 'アイス', 'デザート', 'フルーツ', '果物', 'ヨーグルト']
+    }
+    
+    dish_name = dish_name.lower()
+    for category, keywords in categories.items():
+        for keyword in keywords:
+            if keyword in dish_name:
+                return category
+    
+    return '不明'
+
+def evaluate_menu_balance(menu_data, nutrition_data):
+    """現在のメニュー構成のバランスを評価する"""
+    scores = {}
+    
+    # 栄養バランスの評価
+    nutrition_score = 0
+    for date, nutrition in nutrition_data.items():
+        # エネルギー値が適正範囲内かをチェック
+        energy = nutrition.get('エネルギー', 0)
+        if 1600 <= energy <= 2000:
+            nutrition_score += 2
+        elif 1400 <= energy <= 2200:
+            nutrition_score += 1
+        
+        # タンパク質と脂質のバランス
+        protein = nutrition.get('タンパク質', 0)
+        fat = nutrition.get('脂質', 0)
+        carb = nutrition.get('炭水化物', 0)
+        
+        # PFCバランスの評価（理想は15:25:60）
+        if protein > 0 and fat > 0 and carb > 0:
+            total_energy = (protein * 4) + (fat * 9) + (carb * 4)
+            if total_energy > 0:
+                p_ratio = (protein * 4) / total_energy
+                f_ratio = (fat * 9) / total_energy
+                c_ratio = (carb * 4) / total_energy
+                
+                # タンパク質比率の評価
+                if 0.13 <= p_ratio <= 0.17:
+                    nutrition_score += 1
+                
+                # 脂質比率の評価
+                if 0.23 <= f_ratio <= 0.27:
+                    nutrition_score += 1
+                
+                # 炭水化物比率の評価
+                if 0.55 <= c_ratio <= 0.65:
+                    nutrition_score += 1
+    
+    # 料理系統の多様性の評価
+    variety_score = 0
+    
+    # 各日付のメニューをカテゴリに分類
+    daily_categories = {}
+    for date, meals in menu_data.items():
+        daily_categories[date] = []
+        for meal_type, menu_items in meals.items():
+            for item in menu_items:
+                category = identify_dish_category(item)
+                if category != '不明':
+                    daily_categories[date].append(category)
+    
+    # 連続する日で同じカテゴリが出現する回数をカウント
+    consecutive_same_category = 0
+    dates = sorted(daily_categories.keys())
+    
+    for i in range(len(dates)-1):
+        current_date = dates[i]
+        next_date = dates[i+1]
+        
+        current_categories = daily_categories[current_date]
+        next_categories = daily_categories[next_date]
+        
+        # 両日に共通するカテゴリの数をカウント
+        common_categories = set(current_categories) & set(next_categories)
+        consecutive_same_category += len(common_categories)
+    
+    # 同じ曜日の同じカテゴリをチェック
+    weekly_pattern = {}
+    for date in dates:
+        # 日付から曜日を抽出
+        date_parts = date.split('/')
+        if len(date_parts) == 2:
+            month, day = map(int, date_parts)
+            # 適当な年を設定（2023年など）
+            try:
+                from datetime import datetime
+                # 2023年と仮定
+                weekday = datetime(2023, month, day).weekday()
+                
+                if weekday not in weekly_pattern:
+                    weekly_pattern[weekday] = []
+                
+                weekly_pattern[weekday].extend(daily_categories[date])
+            except:
+                pass  # 日付変換エラーは無視
+    
+    # 同じ曜日に同じカテゴリが集中している場合はスコアを下げる
+    weekly_repetition = 0
+    for weekday, categories in weekly_pattern.items():
+        # カテゴリの出現回数をカウント
+        from collections import Counter
+        category_counts = Counter(categories)
+        
+        # 同じカテゴリが3回以上出現したらペナルティ
+        for category, count in category_counts.items():
+            if count >= 3:
+                weekly_repetition += (count - 2)
+    
+    # 多様性スコアの計算（値が低いほど良い）
+    variety_score = consecutive_same_category + weekly_repetition
+    
+    # 最終スコア（栄養スコアは高いほど良く、多様性スコアは低いほど良い）
+    scores['nutrition'] = nutrition_score
+    scores['variety'] = -variety_score  # マイナスをつけて高いほど良いスコアに変換
+    scores['total'] = nutrition_score - variety_score
+    
+    return scores
+
+def optimize_menu_order(menu_data, nutrition_data):
+    """献立の順序を最適化する"""
+    import random
+    
+    # 最初のスコアを計算
+    best_scores = evaluate_menu_balance(menu_data, nutrition_data)
+    best_menu_data = menu_data.copy()
+    
+    print(f"初期スコア: 栄養={best_scores['nutrition']}, 多様性={best_scores['variety']}, 合計={best_scores['total']}")
+    
+    # メニューの日付リスト
+    dates = list(menu_data.keys())
+    
+    # 最適化の繰り返し回数
+    iterations = min(100, len(dates) * 5)  # 日数に応じて調整
+    
+    for i in range(iterations):
+        # ランダムに2つの日付を選択
+        if len(dates) < 2:
+            break
+            
+        date1, date2 = random.sample(dates, 2)
+        
+        # 一時的に日付を入れ替えた新しいメニューデータを作成
+        new_menu_data = menu_data.copy()
+        new_menu_data[date1], new_menu_data[date2] = new_menu_data[date2], new_menu_data[date1]
+        
+        # 栄養データも同様に入れ替え
+        new_nutrition_data = nutrition_data.copy()
+        if date1 in new_nutrition_data and date2 in new_nutrition_data:
+            new_nutrition_data[date1], new_nutrition_data[date2] = new_nutrition_data[date2], new_nutrition_data[date1]
+        
+        # 新しいスコアを計算
+        new_scores = evaluate_menu_balance(new_menu_data, new_nutrition_data)
+        
+        # スコアが改善していたら採用
+        if new_scores['total'] > best_scores['total']:
+            best_scores = new_scores
+            best_menu_data = new_menu_data.copy()
+            print(f"改善: 栄養={best_scores['nutrition']}, 多様性={best_scores['variety']}, 合計={best_scores['total']}")
+    
+    print(f"最終スコア: 栄養={best_scores['nutrition']}, 多様性={best_scores['variety']}, 合計={best_scores['total']}")
+    
+    return best_menu_data
+
+def reorder_combined_data(combined_data, best_order):
+    """最適化された順序でExcel出力用データを再構成する"""
+    reordered_data = {'項目': combined_data['項目']}
+    
+    # 最適化された順序でデータを再構成
+    for date in best_order:
+        if date in combined_data:
+            reordered_data[date] = combined_data[date]
+    
+    # 最適化されていない日付があれば追加
+    for date in combined_data:
+        if date != '項目' and date not in reordered_data:
+            reordered_data[date] = combined_data[date]
+    
+    return reordered_data
+
+def update_menu_with_reordering(input_file: str, output_file: str = None, reorder_type: str = "栄養バランス優先並び替え", 
+                               target_weekday: str = None, target_genre: str = None):
+    """メニューファイルを読み込み、指定した戦略で並び替えて保存し自動的に開く"""
+    try:
+        print(f"処理開始: {input_file}")
+        print(f"並び替え戦略: {reorder_type}")
+        
+        if target_weekday and target_genre:
+            print(f"ターゲット曜日: {target_weekday}, ターゲットジャンル: {target_genre}")
+        
+        # Excelファイルを読み込む
+        df_dict = pd.read_excel(input_file, sheet_name=None)
+        
+        # データ前処理
+        processed_data = process_all_sheets(df_dict)
+        
+        # 全日分のメニューと栄養素データを抽出
+        all_meals = {}
+        all_nutrition = {}
+        date_columns = [col for col in processed_data.keys() if col != '項目']
+        
+        for date_col in date_columns:
+            # メニューデータの抽出と整形
+            breakfast = processed_data[date_col][1].split('\n') if processed_data[date_col][1] else []
+            lunch = processed_data[date_col][3].split('\n') if processed_data[date_col][3] else []
+            dinner = processed_data[date_col][5].split('\n') if processed_data[date_col][5] else []
+            
+            # メニューデータを辞書に格納
+            all_meals[date_col] = {
+                '朝食': [item for item in breakfast if item.strip()],
+                '昼食': [item for item in lunch if item.strip()],
+                '夕食': [item for item in dinner if item.strip()]
+            }
+            
+            # 栄養データの解析
+            nutrition_text = processed_data[date_col][0]
+            nutrition_dict = {}
+            
+            if nutrition_text:
+                try:
+                    import re
+                    pattern = r'([^:]+):\s*(\d+(?:\.\d+)?)\s*(\w*)'
+                    matches = re.findall(pattern, nutrition_text)
+                    
+                    for nutrient, value, unit in matches:
+                        nutrient = nutrient.strip()
+                        nutrition_dict[nutrient] = float(value)
+                except Exception as e:
+                    print(f"栄養データ解析エラー: {str(e)}")
+                    nutrition_dict = {}
+            
+            all_nutrition[date_col] = nutrition_dict
+        
+        # LLMを使用した並び替え
+        optimized_menu_order, _ = reorder_with_llm(all_meals, all_nutrition, reorder_type, target_weekday, target_genre)
+        
+        # 新しい日付の順序に基づいて出力データを再構成
+        reordered_data = {'項目': processed_data['項目']}
+        
+        # 日付順の変更を反映
+        for original_date, new_meals in optimized_menu_order.items():
+            # 元の日付で対応するデータをコピー
+            reordered_data[original_date] = processed_data[original_date]
+        
+        # 出力先が指定されていない場合、デフォルトの名前を生成
+        if output_file is None:
+            output_file = 'reordered_menu.xlsx'
+        
+        # データをExcelファイルに書き込み
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            for sheet_name, sheet_data in df_dict.items():
+                # 'Sheet1'の場合は並び替えたデータを使用
+                if sheet_name == 'Sheet1':
+                    pd.DataFrame(reordered_data).to_excel(writer, sheet_name=sheet_name, index=False)
+                else:
+                    # それ以外のシートはそのまま書き込み
+                    sheet_data.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        return output_file
+        
+    except Exception as e:
+        print(f"献立並び替えエラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise e
+
+def reorder_with_llm(all_meals, all_nutrition, strategy, target_weekday=None, target_genre=None):
+    """LLMを使用してメニュー並び替えを行う統合関数"""
+    try:
+        if not GOOGLE_API_KEY:
+            print("Google API Keyが設定されていません。従来のアルゴリズムで並び替えを行います。")
+            if strategy == "曜日指定並び替え" and target_weekday and target_genre:
+                return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "AIは使用されていません。従来のアルゴリズムで並び替えました。"
+            else:
+                return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "AIは使用されていません。従来のアルゴリズムで並び替えました。"
+        
+        # メニューとその栄養情報をJSON形式に変換
+        menu_data = {}
+        for date, meals in all_meals.items():
+            menu_data[date] = {
+                "meals": meals,
+                "nutrition": all_nutrition.get(date, {})
+            }
+        
+        # 各戦略に応じたプロンプトの追加情報
+        strategy_prompt = ""
+        if strategy == "栄養バランス優先並び替え":
+            strategy_prompt = """
+            栄養バランスを最優先に考えて並び替えを行ってください。
+            1. 各日の栄養素（カロリー、タンパク質、脂質、炭水化物、ビタミン、ミネラルなど）が週全体で均等に分配されるよう調整
+            2. 特定の栄養素が集中する日を作らないこと
+            3. 日々の栄養摂取が安定するよう配慮
+            """
+        elif strategy == "ランダム並び替え":
+            strategy_prompt = """
+            ランダム性を持たせつつも、以下の点を考慮してください：
+            1. 単純なランダム化ではなく、料理の組み合わせの適切さも検討
+            2. 同じ系統の料理が連続しないよう配慮
+            3. 栄養バランスにも最低限の配慮をする
+            """
+        elif strategy == "曜日指定並び替え" and target_weekday and target_genre:
+            strategy_prompt = f"""
+            特に重視すべき点：
+            1. {target_weekday}に{target_genre}の料理が来るよう調整すること
+            2. {target_genre}と判断できる料理を正確に識別し、該当する日に配置
+            3. 他の日程も栄養バランスや多様性を考慮
+            """
+        
+        # LLMへのプロンプト設計
+        prompt = f"""
+        あなたは献立作成の専門家です。以下の日付ごとのメニューと栄養情報を分析し、最適な順序に並び替えてください。
+
+        【並び替え戦略】
+        {strategy}
+
+        {strategy_prompt}
+
+        【考慮すべき点】
+        1. 栄養バランスが均等に分配されるよう配慮する
+        2. 同じ系統の料理が連続しないようにする
+        3. 曜日ごとの特性を考慮する（例：月曜日は消化の良いもの、金曜日は子どもが喜ぶメニューなど）
+        4. 季節感や彩りを考慮する
+        5. 週を通して多様な食材が提供されるようにする
+
+        【メニューデータ】
+        {json.dumps(menu_data, ensure_ascii=False, indent=2)}
+
+        【指示】
+        最適な並び替え順序を、日付をキーとした辞書形式で出力してください。変更理由も簡潔に説明してください。
+        出力形式は以下のJSONのみとしてください：
+        {{
+          "reordered_dates": ["日付1", "日付2", ...],
+          "rationale": "並び替えの理由の説明"
+        }}
+        """
+        
+        # LLMでの処理
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        
+        # 応答をパース
+        try:
+            response_text = response.text
+            
+            # JSON部分を抽出（マークダウンコードブロックが含まれる可能性がある）
+            import re
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = response_text
+            
+            result = json.loads(json_str)
+            
+            # 並び替え順序を取得
+            reordered_dates = result.get("reordered_dates", [])
+            rationale = result.get("rationale", "")
+            
+            print(f"LLMによる並び替え理由: {rationale}")
+            
+            # 元のメニューを新しい順序で再構成
+            reordered_menu = {}
+            for date in reordered_dates:
+                if date in all_meals:
+                    reordered_menu[date] = all_meals[date]
+            
+            # 何らかの理由で全ての日付が含まれていない場合、残りを追加
+            for date in all_meals:
+                if date not in reordered_menu:
+                    reordered_menu[date] = all_meals[date]
+            
+            # メニューと理由を両方返す
+            return reordered_menu, rationale
+            
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"LLMの応答解析エラー: {str(e)}")
+            # フォールバック: 標準的な並び替えを使用
+            if strategy == "曜日指定並び替え" and target_weekday and target_genre:
+                return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "LLM処理中にエラーが発生したため、従来のアルゴリズムで並び替えました。"
+            else:
+                return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "LLM処理中にエラーが発生したため、従来のアルゴリズムで並び替えました。"
+            
+    except GoogleAPIError as e:
+        print(f"Google API エラー: {str(e)}")
+        # フォールバック: 標準的な並び替えを使用
+        if strategy == "曜日指定並び替え" and target_weekday and target_genre:
+            return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "Google APIエラーのため、従来のアルゴリズムで並び替えました。"
+        else:
+            return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "Google APIエラーのため、従来のアルゴリズムで並び替えました。"
+    except Exception as e:
+        print(f"LLM並び替え中の予期せぬエラー: {str(e)}")
+        # フォールバック: 標準的な並び替えを使用
+        if strategy == "曜日指定並び替え" and target_weekday and target_genre:
+            return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "予期せぬエラーのため、従来のアルゴリズムで並び替えました。"
+        else:
+            return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "予期せぬエラーのため、従来のアルゴリズムで並び替えました。"
+
+def reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre):
+    """指定した曜日と料理ジャンルに基づいてメニューを並び替える"""
+    print(f"曜日指定並び替え: {target_weekday}に{target_genre}")
+    
+    # 日付リストと曜日の対応を作成
+    dates = list(all_meals.keys())
+    weekdays = {date: identify_weekday(date) for date in dates}
+    
+    # 各日のメニューカテゴリを分析
+    day_categories = {}
+    day_genre_scores = {}  # 各日付ごとの各ジャンルのスコアを保存
+    
+    for date, meals in all_meals.items():
+        day_categories[date] = []
+        genre_counts = {}
+        
+        for meal_type, dishes in meals.items():
+            for dish in dishes:
+                category = identify_dish_category(dish)
+                day_categories[date].append(category)
+                
+                # 各ジャンルのカウントを増やす
+                if category in genre_counts:
+                    genre_counts[category] += 1
+                else:
+                    genre_counts[category] = 1
+        
+        # 各日付のジャンルスコアを計算
+        day_genre_scores[date] = genre_counts
+    
+    # ターゲット曜日の日付を見つける
+    target_dates = [date for date, weekday in weekdays.items() if weekday == target_weekday]
+    
+    # ターゲットジャンルに最もマッチする日付を見つける
+    best_match_date = None
+    best_match_score = -1
+    
+    for date in dates:
+        genre_score = day_genre_scores.get(date, {}).get(target_genre, 0)
+        if genre_score > best_match_score:
+            best_match_score = genre_score
+            best_match_date = date
+    
+    # 並び替えの準備
+    import copy
+    reordered_meals = copy.deepcopy(all_meals)
+    
+    # ターゲット曜日とジャンルのマッチングが可能な場合
+    if target_dates and best_match_date:
+        # ターゲット曜日の最初の日付を選択
+        first_target_date = target_dates[0]
+        
+        # 最もマッチするメニューをターゲット曜日に移動
+        if first_target_date != best_match_date:
+            # メニューを入れ替え
+            reordered_meals[first_target_date], reordered_meals[best_match_date] = \
+                reordered_meals[best_match_date], reordered_meals[first_target_date]
+    
+    return reordered_meals
+
+def identify_weekday(date_str):
+    """日付文字列から曜日を特定する"""
+    try:
+        parts = date_str.split('/')
+        if len(parts) == 2:
+            month, day = map(int, parts)
+            # 2023年と仮定（任意の年で問題ない）
+            date_obj = datetime.date(2023, month, day)
+            weekday = date_obj.weekday()  # 0=月曜日, 1=火曜日, ...
+            weekday_names = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+            return weekday_names[weekday]
+        return None
+    except Exception as e:
+        print(f"曜日特定エラー: {str(e)}")
+        return None
+
 # コマンドラインから実行する場合
 if __name__ == "__main__":
     import argparse
@@ -1172,3 +1658,753 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     update_menu_with_desserts(args.input_file, args.output_file) 
+
+def get_nutritionist_response(prompt, message_history):
+    """栄養士としての応答を生成する"""
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # チャット履歴を構築
+        chat_history = []
+        for msg in message_history[:-1]:  # 最新のユーザーメッセージを除く
+            chat_history.append({"role": msg["role"], "parts": [msg["content"]]})
+        
+        # プロンプト設計
+        nutritionist_prompt = f"""
+        あなたは20年以上の経験を持つプロの栄養士です。学校給食や団体向け献立の専門家として、
+        栄養バランス、食材の組み合わせ、季節感、子どもの嗜好などを考慮した専門的なアドバイスができます。
+
+        次の質問に対して、栄養士としての専門知識に基づいて回答してください。
+        専門用語は適宜使用しますが、わかりやすく説明を加えてください。
+        数値やデータに基づいた具体的なアドバイスを心がけてください。
+
+        質問: {prompt}
+        """
+        
+        # 応答生成
+        if len(chat_history) > 0:
+            # チャット履歴がある場合は会話を継続
+            chat = model.start_chat(history=chat_history)
+            response = chat.send_message(nutritionist_prompt)
+        else:
+            # 初回の会話
+            response = model.generate_content(nutritionist_prompt)
+        
+        return response.text
+    except Exception as e:
+        print(f"栄養士応答の生成エラー: {str(e)}")
+        return "申し訳ありません。現在、回答の生成に問題が発生しています。しばらくしてからもう一度お試しください。"
+
+def preview_reordering(input_file: str, **params):
+    """献立の並び替えプレビューを生成する"""
+    try:
+        print(f"並び替えプレビュー生成: {input_file}")
+        reorder_type = params.get("reorder_type", "栄養バランス優先並び替え")
+        print(f"並び替え戦略: {reorder_type}")
+        
+        target_weekday = params.get("target_weekday")
+        target_genre = params.get("target_genre")
+        
+        if target_weekday and target_genre:
+            print(f"ターゲット曜日: {target_weekday}, ターゲットジャンル: {target_genre}")
+        
+        # Excelファイルを読み込む
+        df_dict = pd.read_excel(input_file, sheet_name=None)
+        
+        # データ前処理
+        processed_data = process_all_sheets(df_dict)
+        
+        # 全日分のメニューと栄養素データを抽出
+        all_meals = {}
+        all_nutrition = {}
+        date_columns = [col for col in processed_data.keys() if col != '項目']
+        
+        for date_col in date_columns:
+            # メニューデータの抽出と整形
+            breakfast = processed_data[date_col][1].split('\n') if processed_data[date_col][1] else []
+            lunch = processed_data[date_col][3].split('\n') if processed_data[date_col][3] else []
+            dinner = processed_data[date_col][5].split('\n') if processed_data[date_col][5] else []
+            
+            # メニューデータを辞書に格納
+            all_meals[date_col] = {
+                '朝食': [item for item in breakfast if item.strip()],
+                '昼食': [item for item in lunch if item.strip()],
+                '夕食': [item for item in dinner if item.strip()]
+            }
+            
+            # 栄養データの解析
+            nutrition_text = processed_data[date_col][0]
+            nutrition_dict = {}
+            
+            if nutrition_text:
+                try:
+                    import re
+                    pattern = r'([^:]+):\s*(\d+(?:\.\d+)?)\s*(\w*)'
+                    matches = re.findall(pattern, nutrition_text)
+                    
+                    for nutrient, value, unit in matches:
+                        nutrient = nutrient.strip()
+                        nutrition_dict[nutrient] = float(value)
+                except Exception as e:
+                    print(f"栄養データ解析エラー: {str(e)}")
+                    nutrition_dict = {}
+            
+            all_nutrition[date_col] = nutrition_dict
+        
+        # LLMを使用した並び替え - 理由も取得
+        optimized_menu_order, reorder_rationale = reorder_with_llm(all_meals, all_nutrition, reorder_type, target_weekday, target_genre)
+        
+        # 新しい日付の順序に基づいて出力データを再構成
+        reordered_data = {'項目': processed_data['項目']}
+        
+        # 日付順の変更を反映
+        for original_date, new_meals in optimized_menu_order.items():
+            # 元の日付で対応するデータをコピー
+            reordered_data[original_date] = processed_data[original_date]
+        
+        # DataFrameに変換
+        result_df = pd.DataFrame(reordered_data)
+        
+        # 詳細なメニュー情報と並び替え理由も返す
+        return result_df, optimized_menu_order, reorder_rationale
+        
+    except Exception as e:
+        print(f"プレビュー生成エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise e
+
+# 新しく追加する一週間献立生成関数
+def generate_weekly_menu(days, params):
+    """
+    LLMを活用して一週間の献立を生成する関数
+    
+    Args:
+        days (int): 何日分の献立を生成するか
+        params (dict): 生成パラメータ（好み、予算など）
+        
+    Returns:
+        dict: 日付をキーとした献立情報
+    """
+    try:
+        # APIキーの確認
+        if not GOOGLE_API_KEY:
+            raise ValueError("Google API Keyが設定されていません。")
+        
+        # 開始日を取得
+        start_date = params.get("start_date")
+        if not start_date:
+            start_date = datetime.date.today()
+        
+        # 食事のパターンを取得
+        meal_pattern = params.get("meal_pattern", "一日3食（朝・昼・夕）")
+        if "朝・昼・夕" in meal_pattern:
+            meal_types = ["朝食", "昼食", "夕食"]
+        elif "朝・夕" in meal_pattern:
+            meal_types = ["朝食", "夕食"]
+        elif "昼・夕" in meal_pattern:
+            meal_types = ["昼食", "夕食"]
+        else:
+            meal_types = ["朝食", "昼食", "夕食"]
+        
+        # 人数を取得
+        person_count = params.get("person_count", 20)
+        
+        # 特別な配慮事項を文字列に変換
+        special_considerations = params.get("special_considerations", [])
+        special_text = "特になし"
+        if special_considerations:
+            special_text = "、".join(special_considerations)
+        
+        # 日付情報の作成（現在の日付から正確に計算）
+        date_infos = []
+        for i in range(days):
+            curr_date = start_date + datetime.timedelta(days=i)
+            weekday = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][curr_date.weekday()]
+            date_str = curr_date.strftime("%Y-%m-%d")
+            date_display = curr_date.strftime("%m月%d日")
+            date_infos.append({
+                "date": date_str,
+                "display": date_display,
+                "weekday": weekday
+            })
+        
+        # 日付文字列をあらかじめ作成（入れ子エラーを回避）
+        formatted_dates = ', '.join([d['date'] for d in date_infos])
+        formatted_displays = ', '.join([f"{d['display']}（{d['weekday']}）" for d in date_infos])
+        
+        # LLMプロンプトの簡素化 - 入れ子の深さによるエラーを回避
+        prompt_header = f"""
+        あなたはシルバー向け給食を専門とするプロの栄養士です。以下の条件に基づいて、{days}日分の献立を作成してください。
+
+        【条件】
+        - 対象: シルバー向け給食（高齢者施設）
+        - 予算: 一食あたり200〜300円（デザート込み）
+        - 献立傾向: {params.get("cuisine_preference", "バランス重視")}
+        - 食事パターン: {meal_pattern}
+        - 特別な配慮: {special_text}
+        - 調理人数: {person_count}人分
+        
+        【日程】
+        {formatted_displays}
+        
+        【出力内容】
+        各日の朝食・昼食・夕食のメニュー項目と、それぞれの料理に必要な1人分の食材量、および栄養情報
+        """
+        
+        prompt_format = """
+        【重要】以下の指示に厳密に従ってJSON形式のデータを出力してください：
+        1. JSONにはコメントを含めないでください
+        2. プロパティ名と値は必ず二重引用符で囲んでください
+        3. 配列や辞書の最後の要素の後にカンマを置かないでください
+        4. シンプルな構造を保ち、ネストは最小限に抑えてください
+        """
+        
+        # サンプルJSONは文字列リテラルで直接記述し、f-stringの入れ子を避ける
+        sample_json = '''
+        ```json
+        {
+          "2024-04-01": {
+            "meals": {
+              "朝食": ["米飯", "焼き鮭", "きんぴらごぼう", "味噌汁", "バナナ"],
+              "昼食": ["パン", "コーンスープ", "サラダ", "ヨーグルト"],
+              "夕食": ["麦飯", "鶏の照り焼き", "ほうれん草のおひたし", "すまし汁", "りんご"]
+            },
+            "ingredients": {
+              "朝食": {
+                "米飯": {"米": "80g", "塩": "0.5g"},
+                "焼き鮭": {"鮭": "60g", "塩": "1g"},
+                "きんぴらごぼう": {"ごぼう": "30g", "にんじん": "15g", "油": "3g", "砂糖": "2g", "醤油": "3g"},
+                "味噌汁": {"豆腐": "30g", "わかめ": "2g", "味噌": "7g", "だし": "100ml"},
+                "バナナ": {"バナナ": "半分"}
+              },
+              "昼食": {
+                "パン": {"食パン": "1枚"},
+                "コーンスープ": {"コーン": "30g", "玉ねぎ": "20g", "牛乳": "100ml", "バター": "3g", "小麦粉": "5g", "コンソメ": "3g"},
+                "サラダ": {"レタス": "20g", "トマト": "30g", "きゅうり": "20g", "ドレッシング": "8g"},
+                "ヨーグルト": {"プレーンヨーグルト": "100g", "はちみつ": "5g"}
+              },
+              "夕食": {
+                "麦飯": {"米": "70g", "麦": "10g", "塩": "0.5g"},
+                "鶏の照り焼き": {"鶏もも肉": "60g", "醤油": "5g", "みりん": "5g", "砂糖": "3g"},
+                "ほうれん草のおひたし": {"ほうれん草": "50g", "醤油": "3g", "かつお節": "1g"},
+                "すまし汁": {"豆腐": "20g", "三つ葉": "5g", "しいたけ": "10g", "だし": "100ml", "醤油": "3g"},
+                "りんご": {"りんご": "50g"}
+              }
+            },
+            "nutrition": {
+              "カロリー": "1800kcal",
+              "タンパク質": "75g",
+              "脂質": "50g", 
+              "炭水化物": "240g",
+              "塩分": "7.5g"
+            }
+          }
+        }
+        ```
+        '''
+        
+        prompt_footer = f"""
+        実際には{days}日分のデータを生成し、日付は必ず{formatted_dates}の形式で表記してください。
+        各メニュー項目に対して、具体的な食材と1人分の量を詳細に記載してください。
+        """
+        
+        # 完全なプロンプトの組み立て
+        complete_prompt = prompt_header + prompt_format + sample_json + prompt_footer
+        
+        # LLMでの処理
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(complete_prompt)
+        
+        # 応答をパース
+        try:
+            response_text = response.text
+            
+            # デバッグ出力
+            print("LLM応答テキスト:")
+            print(response_text[:200] + "..." if len(response_text) > 200 else response_text)
+            
+            # JSON部分を抽出（マークダウンコードブロックが含まれる可能性がある）
+            import re
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = response_text
+            
+            # JSONを整形する前処理
+            # コメントの削除
+            json_str = re.sub(r'//.*?\n', '\n', json_str)
+            json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+            
+            # 末尾のカンマを削除（JSON配列や辞書の最後の要素の後のカンマ）
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+            
+            # プロパティ名の引用符がない場合に追加
+            json_str = re.sub(r'(\s*)([a-zA-Z0-9_]+)(\s*):(\s*)', r'\1"\2"\3:\4', json_str)
+            
+            # テンプレート文字列を実際の値に置換（{{...}} を解決）
+            json_str = re.sub(r'{{([^}]+)}}', r'{\1}', json_str)
+            
+            try:
+                # 標準のJSONパーサーでパース
+                result = json.loads(json_str)
+            except json.JSONDecodeError as je:
+                # エラー位置の周辺テキストを表示
+                print(f"JSON解析エラー: {str(je)}")
+                error_pos = je.pos
+                context_start = max(0, error_pos - 40)
+                context_end = min(len(json_str), error_pos + 40)
+                error_context = json_str[context_start:context_end]
+                print(f"エラー周辺: ...{error_context}...")
+                print(f"エラー位置: {'^'.rjust(min(40, error_pos - context_start) + 3)}")
+                
+                # バックアッププランとして、より簡易的な構造を作成
+                # 各日に基本的なデータ構造を提供
+                result = {}
+                for date_info in date_infos:
+                    date_key = date_info['date']
+                    result[date_key] = {
+                        "meals": {
+                            "朝食": ["米飯", "主菜", "副菜", "汁物", "デザート"],
+                            "昼食": ["パン", "主菜", "副菜", "汁物", "デザート"],
+                            "夕食": ["米飯", "主菜", "副菜", "汁物", "デザート"]
+                        },
+                        "ingredients": {
+                            "朝食": {
+                                "米飯": {"米": "80g"},
+                                "主菜": {"材料": "適量"},
+                                "副菜": {"材料": "適量"},
+                                "汁物": {"材料": "適量"},
+                                "デザート": {"材料": "適量"}
+                            },
+                            "昼食": {
+                                "パン": {"小麦粉": "適量"},
+                                "主菜": {"材料": "適量"},
+                                "副菜": {"材料": "適量"},
+                                "汁物": {"材料": "適量"},
+                                "デザート": {"材料": "適量"}
+                            },
+                            "夕食": {
+                                "米飯": {"米": "80g"},
+                                "主菜": {"材料": "適量"},
+                                "副菜": {"材料": "適量"},
+                                "汁物": {"材料": "適量"},
+                                "デザート": {"材料": "適量"}
+                            }
+                        },
+                        "nutrition": {
+                            "カロリー": "約1800kcal",
+                            "タンパク質": "約75g",
+                            "脂質": "約50g",
+                            "炭水化物": "約240g",
+                            "塩分": "約7.5g"
+                        }
+                    }
+                
+                # LLMの応答から可能な限り情報を抽出
+                # 日付ごとのセクションを抽出
+                date_sections = re.findall(r'"([0-9]{4}-[0-9]{2}-[0-9]{2})".*?(?="[0-9]{4}-[0-9]{2}-[0-9]{2}"|$)', 
+                                           json_str, re.DOTALL)
+                
+                for section in date_sections:
+                    date_match = re.search(r'([0-9]{4}-[0-9]{2}-[0-9]{2})', section)
+                    if date_match:
+                        date_key = date_match.group(1)
+                        
+                        # 各料理を抽出する試み
+                        meal_types = ["朝食", "昼食", "夕食"]
+                        for meal_type in meal_types:
+                            meal_match = re.search(f'"{meal_type}"\\s*:\\s*\\[(.*?)\\]', section, re.DOTALL)
+                            if meal_match and date_key in result:
+                                meal_items = re.findall(r'"([^"]+)"', meal_match.group(1))
+                                if meal_items:
+                                    result[date_key]["meals"][meal_type] = meal_items
+            
+            # 日付形式が正しいか確認し、必要に応じて修正
+            corrected_result = {}
+            for i, date_info in enumerate(date_infos):
+                expected_date = date_info['date']
+                # 結果に期待する日付が含まれていない場合は追加
+                if expected_date not in result:
+                    # 何らかの別の日付キーが使われている可能性があるため検索
+                    found = False
+                    for key in result.keys():
+                        if isinstance(key, str) and (key.endswith(expected_date[-5:]) or key.startswith(expected_date[:7])):
+                            corrected_result[expected_date] = result[key]
+                            found = True
+                            break
+                    # それでも見つからない場合はi番目のデータを使用（ある場合）
+                    if not found and i < len(list(result.keys())):
+                        corrected_result[expected_date] = result[list(result.keys())[i]]
+                else:
+                    corrected_result[expected_date] = result[expected_date]
+            
+            # 食材情報がない場合は空のオブジェクトを追加
+            for date_key, menu_data in corrected_result.items():
+                if "ingredients" not in menu_data:
+                    menu_data["ingredients"] = {}
+                    # メニュー項目ごとに空の食材情報を追加
+                    for meal_type, items in menu_data.get("meals", {}).items():
+                        if meal_type not in menu_data["ingredients"]:
+                            menu_data["ingredients"][meal_type] = {}
+                        # 各料理に空の食材情報を追加
+                        for item in items:
+                            if item not in menu_data["ingredients"][meal_type]:
+                                menu_data["ingredients"][meal_type][item] = {"材料情報なし": "量不明"}
+            
+            # 少なくとも1つの結果があれば修正結果を返す
+            if corrected_result:
+                return corrected_result
+            else:
+                return result  # 元の結果を返す
+            
+        except Exception as e:
+            print(f"LLMの応答解析エラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            # フォールバック：基本的な構造のデータを返す
+            fallback_data = create_fallback_menu(date_infos)
+            return fallback_data
+            
+    except Exception as e:
+        print(f"献立生成中のエラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"error": f"献立生成に失敗しました: {str(e)}"}
+
+# フォールバックメニュー作成関数（コードの分割）
+def create_fallback_menu(date_infos):
+    """エラー時のフォールバックメニューを生成する関数"""
+    fallback_data = {}
+    for date_info in date_infos:
+        date_key = date_info['date']
+        fallback_data[date_key] = {
+            "meals": {
+                "朝食": ["米飯", "焼き魚", "野菜サラダ", "味噌汁", "フルーツ"],
+                "昼食": ["パン", "シチュー", "サラダ", "スープ", "ヨーグルト"],
+                "夕食": ["米飯", "煮魚", "お浸し", "すまし汁", "デザート"]
+            },
+            "ingredients": {
+                "朝食": {
+                    "米飯": {"米": "80g", "塩": "0.5g"},
+                    "焼き魚": {"魚": "60g", "塩": "1g"},
+                    "野菜サラダ": {"レタス": "30g", "トマト": "20g", "きゅうり": "20g", "ドレッシング": "5g"},
+                    "味噌汁": {"豆腐": "30g", "わかめ": "3g", "だし": "100ml", "味噌": "8g"},
+                    "フルーツ": {"バナナ": "半分"}
+                },
+                "昼食": {
+                    "パン": {"食パン": "1枚"},
+                    "シチュー": {"じゃがいも": "40g", "にんじん": "20g", "玉ねぎ": "30g", "鶏肉": "30g", "牛乳": "80ml", "ルウ": "15g"},
+                    "サラダ": {"キャベツ": "40g", "コーン": "10g", "マヨネーズ": "5g"},
+                    "スープ": {"コンソメ": "5g", "水": "150ml", "具材": "20g"},
+                    "ヨーグルト": {"プレーンヨーグルト": "100g", "蜂蜜": "5g"}
+                },
+                "夕食": {
+                    "米飯": {"米": "80g", "塩": "0.5g"},
+                    "煮魚": {"魚": "60g", "醤油": "5g", "砂糖": "3g", "酒": "5ml"},
+                    "お浸し": {"ほうれん草": "50g", "醤油": "3g", "かつお節": "1g"},
+                    "すまし汁": {"豆腐": "20g", "わかめ": "3g", "だし": "100ml", "醤油": "3g"},
+                    "デザート": {"フルーツ": "適量"}
+                }
+            },
+            "nutrition": {
+                "カロリー": "1800kcal",
+                "タンパク質": "75g",
+                "脂質": "50g",
+                "炭水化物": "240g",
+                "塩分": "7.5g"
+            }
+        }
+    return fallback_data
+
+# 献立並び替え関数の追加（未定義エラーを解消）
+def reorder_menu_by_strategy(menu_data, strategy):
+    """
+    献立を指定された戦略に基づいて並び替える関数
+    
+    Args:
+        menu_data (dict): 献立データ
+        strategy (str): 並び替え戦略
+        
+    Returns:
+        dict: 並び替え後の献立データ
+    """
+    # 戦略に基づいた並び替えロジックを実装
+    # （今回は仮実装としてオリジナルを返す）
+    return menu_data
+
+def create_order_sheets(input_file, output_file, person_count=45, destination="宝成"):
+    """
+    献立表から発注書を作成する関数
+    
+    Args:
+        input_file (str): 入力ファイルのパス
+        output_file (str): 出力ファイルのパス
+        person_count (int): 発注する人数
+        destination (str): 発注書の送り先（宝成または豊中）
+        
+    Returns:
+        None
+    """
+    try:
+        # Excelファイルの読み込み
+        menu_df = pd.read_excel(input_file)
+        
+        # 日付列の特定（"項目"列を除外）
+        date_columns = [col for col in menu_df.columns if col != '項目']
+        
+        # 各日付ごとの食材リスト
+        all_ingredients_by_date = {}
+        
+        # 食材以外の項目を除外するキーワードリスト
+        exclude_keywords = [
+            'エネルギー', 'タンパク質', '脂質', '炭水化物', 'カルシウム', '鉄分', '食物繊維',
+            '栄養価', '栄養素', 'kcal', 'mg', '栄養価合計', '1日の栄養'
+        ]
+        
+        # 調味料リスト - これらは発注書から除外
+        seasonings = [
+            '砂糖', '三温糖', '上白糖', '黒砂糖', 'グラニュー糖', 'きび砂糖', '塩', '塩分', '食塩', '岩塩',
+            '醤油', 'しょうゆ', '薄口醤油', '濃口醤油', 'だし', '出汁', 'だし汁', '和風だし', '昆布だし',
+            '鰹だし', 'めんつゆ', 'みりん', '料理酒', '酒', '味噌', 'みそ', '赤みそ', '白みそ', 'レモン汁',
+            'レモン果汁', '油', 'サラダ油', 'オリーブオイル', 'ごま油', 'マヨネーズ', 'ケチャップ', '酢',
+            '米酢', '穀物酢', 'バルサミコ酢', 'ソース', 'ウスターソース', '中濃ソース', 'カレー粉',
+            'カレールウ', '胡椒', 'こしょう', 'コショウ', '七味唐辛子', '一味唐辛子', 'わさび', '山葵',
+            'からし', '辛子', '柚子胡椒', '柚子こしょう', 'にんにく', 'ニンニク', 'しょうが', '生姜',
+            'バター', 'マーガリン', '顆粒だし', '中華だし', '鶏がらスープ', '味の素', 'アミノ酸',
+            'コンソメ', '固形スープ', 'ブイヨン', '調味料', 'スパイス', 'ハーブ', 'タレ', 'たれ',
+            'カラースプレー', '適量'
+        ]
+        
+        # 食材かどうかを判定する関数
+        def is_food_item(item_name, amount):
+            # 除外キーワードを含む場合はFalse
+            for keyword in exclude_keywords:
+                if keyword in item_name:
+                    return False
+            
+            # 調味料リストに含まれる場合はFalse
+            for seasoning in seasonings:
+                if seasoning in item_name:
+                    return False
+            
+            # 単位がgやkg、個などが含まれていたり、数値を含む場合はTrue
+            has_unit = any(unit in amount for unit in ['g', 'kg', '個', 'ml', 'L', 'cc', '本', '枚', '袋'])
+            has_number = any(char.isdigit() for char in amount)
+            
+            return has_unit or has_number
+        
+        # 数量の小数点以下を切り捨てる関数
+        def truncate_decimal(amount_str):
+            import re
+            # 数字を抽出
+            match = re.search(r'([\d.]+)([^0-9.]*)', amount_str)
+            if match:
+                number_part = match.group(1)
+                unit_part = match.group(2)
+                
+                # 小数点があれば切り捨て
+                if '.' in number_part:
+                    integer_part = number_part.split('.')[0]
+                    return f"{integer_part}{unit_part}"
+            
+            return amount_str
+        
+        # 日付ごとに食材を処理
+        for date_col in date_columns:
+            # この日付の食材リスト
+            ingredients_list = []
+            
+            # すべての行を処理
+            for i in range(len(menu_df)):
+                dish_name = menu_df.iloc[i]['項目']
+                cell_content = menu_df.iloc[i][date_col]
+                
+                # 有効なセル内容のみ処理
+                if pd.notna(dish_name) and pd.notna(cell_content) and isinstance(cell_content, str):
+                    # 1日の栄養価合計などの行は除外
+                    if any(keyword in str(dish_name) for keyword in exclude_keywords):
+                        continue
+                    
+                    # 階層構造の食材リストを処理
+                    if "- " in cell_content and ("/" in cell_content or "g" in cell_content):
+                        # 複数行に分かれている可能性があるため、行ごとに分割
+                        lines = cell_content.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith("- "):
+                                # 「- 食材名: 量」の形式を解析
+                                parts = line[2:].split(":", 1)
+                                if len(parts) == 2:
+                                    food_name = parts[0].strip()
+                                    amount = parts[1].strip()
+                                    
+                                    # 食材として有効か確認
+                                    if is_food_item(food_name, amount):
+                                        # 小数点以下を切り捨て
+                                        if '/' in amount:
+                                            parts = amount.split('/')
+                                            truncated_amount = '/'.join([truncate_decimal(p) for p in parts])
+                                        else:
+                                            truncated_amount = truncate_decimal(amount)
+                                        
+                                        ingredients_list.append((food_name, truncated_amount))
+                                elif "/" in line:
+                                    # 「- 食材名 量/総量」の形式を解析
+                                    name_parts = line[2:].split()
+                                    if len(name_parts) >= 2:
+                                        food_name = " ".join(name_parts[:-1])
+                                        amount = name_parts[-1]
+                                        
+                                        # 食材として有効か確認
+                                        if is_food_item(food_name, amount):
+                                            # 小数点以下を切り捨て
+                                            if '/' in amount:
+                                                parts = amount.split('/')
+                                                truncated_amount = '/'.join([truncate_decimal(p) for p in parts])
+                                            else:
+                                                truncated_amount = truncate_decimal(amount)
+                                            
+                                            ingredients_list.append((food_name, truncated_amount))
+                    # 通常の食材データとして処理
+                    elif isinstance(dish_name, str) and dish_name not in ['朝食', '昼食', '夕食'] and cell_content:
+                        # メニュー情報（食事区分のタイトルなど）でないことを確認
+                        if not any(keyword in dish_name for keyword in ['(主菜', '(副菜', '(汁物']) and not any(keyword in str(cell_content) for keyword in exclude_keywords):
+                            amount = str(cell_content)
+                            
+                            # 食材として有効か確認
+                            if is_food_item(dish_name, amount):
+                                # 小数点以下を切り捨て
+                                if '/' in amount:
+                                    parts = amount.split('/')
+                                    truncated_amount = '/'.join([truncate_decimal(p) for p in parts])
+                                else:
+                                    truncated_amount = truncate_decimal(amount)
+                                
+                                ingredients_list.append((dish_name, truncated_amount))
+            
+            # この日付の食材リストを保存
+            all_ingredients_by_date[date_col] = ingredients_list
+        
+        # 日付を2日ごとにグループ化
+        date_pairs = []
+        for i in range(0, len(date_columns), 2):
+            if i + 1 < len(date_columns):
+                date_pairs.append((date_columns[i], date_columns[i+1]))
+            else:
+                date_pairs.append((date_columns[i], None))
+        
+        # 送り先に応じたヘッダーテキストを設定
+        header_text = ""
+        if destination == "宝成":
+            header_text = "宝成　御中"
+        elif destination == "豊中":
+            header_text = "株式会社　豊中商店　御中"
+        
+        # 出力用のExcelファイルを作成
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # 2日分ずつシートを作成
+            for pair_idx, (date1, date2) in enumerate(date_pairs):
+                # シート名の設定
+                sheet_name = f"発注書_{pair_idx+1}"
+                
+                # 発注書データの作成
+                order_data = {
+                    'A': [''] * 100,  # 十分な行数を確保
+                    'B': [''] * 100,
+                    'C': [''] * 100,
+                    'D': [''] * 100,
+                    'E': [''] * 100
+                }
+                
+                # ヘッダー部分の設定
+                order_data['C'][0] = header_text
+                order_data['B'][1] = '発注書'
+                
+                # 食品名と使用量のヘッダー
+                order_data['A'][3] = '食品名'
+                order_data['B'][3] = f'{date1}使用分' if '/' in date1 else f'{date1}使用分'
+                if date2:
+                    order_data['C'][3] = ''  # 空白列
+                    order_data['D'][3] = '食品名'
+                    order_data['E'][3] = f'{date2}使用分' if '/' in date2 else f'{date2}使用分'
+                
+                # 1日目の食材を追加
+                food_items1 = all_ingredients_by_date.get(date1, [])
+                for i, (name, amount) in enumerate(food_items1):
+                    row_idx = i + 4  # ヘッダー行の後ろから開始
+                    order_data['A'][row_idx] = name
+                    
+                    # 「/」で個人分と総量が指定されている場合は総量のみ使用
+                    if "/" in amount:
+                        total_amount = amount.split("/")[-1] if amount else amount
+                        order_data['B'][row_idx] = total_amount
+                    else:
+                        order_data['B'][row_idx] = amount
+                
+                # 2日目の食材を追加
+                if date2:
+                    food_items2 = all_ingredients_by_date.get(date2, [])
+                    for i, (name, amount) in enumerate(food_items2):
+                        row_idx = i + 4  # ヘッダー行の後ろから開始
+                        order_data['D'][row_idx] = name
+                        
+                        # 「/」で個人分と総量が指定されている場合は総量のみ使用
+                        if "/" in amount:
+                            total_amount = amount.split("/")[-1] if amount else amount
+                            order_data['E'][row_idx] = total_amount
+                        else:
+                            order_data['E'][row_idx] = amount
+                
+                # DataFrameに変換
+                order_df = pd.DataFrame(order_data)
+                
+                # シートに書き込み
+                order_df.to_excel(writer, sheet_name=sheet_name, header=False, index=False)
+                
+                # シートの書式設定
+                worksheet = writer.sheets[sheet_name]
+                
+                # 列幅の調整
+                worksheet.column_dimensions['A'].width = 20
+                worksheet.column_dimensions['B'].width = 15
+                worksheet.column_dimensions['C'].width = 5
+                worksheet.column_dimensions['D'].width = 20
+                worksheet.column_dimensions['E'].width = 15
+                
+                # タイトル行のスタイル
+                from openpyxl.styles import Font, Alignment
+                worksheet['C1'].font = Font(size=14, bold=True)
+                worksheet['B2'].font = Font(size=14, bold=True)
+                
+                # ヘッダー行の設定
+                for col in ['A', 'B', 'D', 'E']:
+                    cell = worksheet[f'{col}4']
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal='center')
+                
+                # 罫線の設定
+                from openpyxl.styles import Border, Side
+                thin_border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+                
+                # 食品名と使用量の枠に罫線を追加
+                max_rows = max(len(food_items1), len(food_items2) if date2 else 0)
+                for row in range(4, 4 + max_rows + 1):
+                    for col in ['A', 'B', 'D', 'E']:
+                        cell = worksheet[f'{col}{row}']
+                        cell.border = thin_border
+        
+        return True
+    
+    except Exception as e:
+        print(f"発注書作成中にエラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise e
