@@ -4,6 +4,7 @@ import pandas as pd
 import random
 import subprocess
 import os
+import sys
 from datetime import datetime
 from typing import Tuple, Dict, List
 from dotenv import load_dotenv
@@ -13,25 +14,52 @@ import datetime
 import json
 from google.api_core.exceptions import GoogleAPIError
 
-# .envファイルから環境変数を読み込む
-load_dotenv()
+# プロジェクトのルートディレクトリを取得
+ROOT_DIR = Path(__file__).parent.parent
+DATA_DIR = ROOT_DIR / "data"
+
+# .envファイルのパスを確認
+# PyInstallerでバンドルされた場合は実行ファイルのディレクトリを使用
+if getattr(sys, 'frozen', False):
+    # PyInstallerでバンドルされた場合
+    application_path = os.path.dirname(sys.executable)
+    env_path = os.path.join(application_path, '.env')
+    # .envがアプリケーションと同じディレクトリにあるか確認
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    # kondate/.envも確認
+    kondate_env_path = os.path.join(application_path, 'kondate', '.env')
+    if os.path.exists(kondate_env_path):
+        load_dotenv(kondate_env_path)
+else:
+    # 通常の実行時
+    load_dotenv()
+    # プロジェクトのルートディレクトリにある.envも確認
+    project_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+    if os.path.exists(project_env_path):
+        load_dotenv(project_env_path)
 
 # Gemini APIキーを設定
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# プロジェクトのルートディレクトリを取得
-ROOT_DIR = Path(__file__).parent.parent
-DATA_DIR = ROOT_DIR / "data"
-
 def load_nutrition_data():
     """CSVファイルから栄養価データを読み込む"""
     nutrition_data = {}
     try:
-        csv_path = Path(__file__).parent / "nutrition_data.csv"
+        # 通常のパスとPyInstallerでバンドルされた場合のパスを確認
+        if getattr(sys, 'frozen', False):
+            # PyInstallerでバンドルされた場合
+            application_path = os.path.dirname(sys.executable)
+            csv_path = os.path.join(application_path, 'nutrition_data.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(application_path, 'data', 'nutrition_data.csv')
+        else:
+            # 通常の実行時
+            csv_path = Path(__file__).parent / "nutrition_data.csv"
         
         # CSVファイルが存在しない場合は、初期データを作成
-        if not csv_path.exists():
+        if not os.path.exists(csv_path):
             print(f"栄養価データCSVが見つかりません: {csv_path}")
             print("基本データを使用します")
             return get_default_nutrition_data()
