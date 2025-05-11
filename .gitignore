@@ -34,5 +34,3 @@ ENV/
 
 # Temporary files
 /tmp/
-*.xlsx
-*.xls 
