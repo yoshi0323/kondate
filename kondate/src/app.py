@@ -26,12 +26,30 @@ from menu_updater import (
 ROOT_DIR = Path(__file__).parent.parent
 DATA_DIR = ROOT_DIR / "data"
 
-# ページ設定
+# ページ設定 - アドブロッカー対応のオプションを追加
 st.set_page_config(
     page_title="給食AI自動生成システム",
     page_icon="🍰",
-    layout="wide"
+    layout="wide",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': """
+        © 2025 給食AI自動生成システム - 献立作成支援ツール
+        """
+    }
 )
+
+# カスタムCSS - アドブロッカーの警告を非表示にする
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+.stDeployButton {display:none;}
+.css-eh5xgm.e1ewe7hr3, .viewerBadge_container__1QSob {display: none;}
+.block-container {padding-top: 2rem;}
+</style>
+""", unsafe_allow_html=True)
 
 # アプリタイトル
 st.title("給食AI自動生成システム 🍰")
@@ -89,6 +107,13 @@ with tab1:
                                 )
                             else:
                                 st.error("メニュー表の更新に失敗しました。")
+                                st.info("もう一度お試しいただくか、ファイルの形式を確認してください。")
+                                retry_col1, retry_col2 = st.columns([1,3])
+                                with retry_col1:
+                                    if st.button("再試行", key="retry_update"):
+                                        st.experimental_rerun()
+                                with retry_col2:
+                                    st.write("ファイルのフォーマットが正しいことを確認してください。入力ファイルは最新の形式である必要があります。")
                         
                         else:  # 画像出力
                             # 画像出力処理を実行
