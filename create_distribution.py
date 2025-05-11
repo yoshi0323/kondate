@@ -8,7 +8,8 @@ import os
 import shutil
 import zipfile
 import sys
-import datetime
+from datetime import datetime
+import codecs
 
 # 配布フォルダ名
 DIST_DIR = "dist"
@@ -16,67 +17,95 @@ PACKAGE_DIR = "配布用パッケージ"
 
 # 配布に含めるファイル
 FILES_TO_INCLUDE = [
-    # EXEファイル
-    {"source": os.path.join(DIST_DIR, "献立管理システム.exe"), 
-     "dest": "献立管理システム.exe"},
+    # メインファイル
+    {"source": os.path.join(DIST_DIR, "kondate_system.exe"), 
+     "dest": "kondate_system.exe"},
+    {"source": os.path.join(DIST_DIR, "app.py"), 
+     "dest": "app.py"},
+    {"source": os.path.join(DIST_DIR, "menu_updater.py"), 
+     "dest": "menu_updater.py"},
+    {"source": os.path.join(DIST_DIR, "nutrition_data.csv"), 
+     "dest": "nutrition_data.csv"},
     # 環境設定ファイル
-    {"source": "kondate/.env", 
+    {"source": os.path.join(DIST_DIR, ".env"), 
      "dest": ".env"},
+    # 起動ファイル
+    {"source": os.path.join(DIST_DIR, "run_menu.bat"), 
+     "dest": "run_menu.bat"},
+    {"source": os.path.join(DIST_DIR, "Start.bat"), 
+     "dest": "Start.bat"},
     # 説明書
     {"source": "配布手順.md", 
-     "dest": "README.md"}
+     "dest": "README.txt"}
 ]
 
-def create_distribution_package():
-    """配布用パッケージを作成する"""
+def main():
     print("献立管理システム配布パッケージ作成ツール")
-    print("-" * 40)
+    print("----------------------------------------")
     
-    # EXEファイルが存在するか確認
-    if not os.path.exists(os.path.join(DIST_DIR, "献立管理システム.exe")):
+    # ディレクトリ設定
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    dist_dir = os.path.join(root_dir, 'dist')
+    exe_file = os.path.join(dist_dir, 'kondate_system.exe')
+    
+    # EXEファイルの存在確認
+    if not os.path.exists(exe_file):
         print("エラー: EXEファイルが見つかりません。")
         print("先にビルドを実行してください: python build.py")
-        return False
+        return 1
     
-    # .envファイルが存在するか確認
-    if not os.path.exists("kondate/.env"):
-        print("エラー: 環境設定ファイル(.env)が見つかりません。")
-        return False
+    # 配布ファイルの確認
+    required_files = [
+        'kondate_system.exe',
+        'app.py',
+        'menu_updater.py',
+        'nutrition_data.csv',
+        'run_menu.bat',
+        'Start.bat'
+    ]
     
-    # 配布用フォルダを作成
-    if os.path.exists(PACKAGE_DIR):
-        shutil.rmtree(PACKAGE_DIR)
-    os.makedirs(PACKAGE_DIR)
+    missing_files = []
+    for file in required_files:
+        file_path = os.path.join(dist_dir, file)
+        if not os.path.exists(file_path):
+            missing_files.append(file)
     
-    # ファイルをコピー
-    for file_info in FILES_TO_INCLUDE:
-        src = file_info["source"]
-        dest = os.path.join(PACKAGE_DIR, file_info["dest"])
-        
-        if os.path.exists(src):
-            print(f"コピー中: {src} -> {dest}")
-            shutil.copy2(src, dest)
-        else:
-            print(f"警告: {src} が見つかりません。スキップします。")
+    if missing_files:
+        print("エラー: 以下のファイルが見つかりません:")
+        for file in missing_files:
+            print(f"- {file}")
+        print("先にビルドを実行してください: python build.py")
+        return 1
     
-    # ZIPアーカイブを作成
-    today = datetime.datetime.now().strftime("%Y%m%d")
-    zip_filename = f"献立管理システム_{today}.zip"
+    # 配布パッケージの作成
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"kondate_system_{timestamp}.zip"
     
-    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(PACKAGE_DIR):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, PACKAGE_DIR)
-                print(f"ZIPに追加: {file_path} -> {arcname}")
+    # 配布用パッケージフォルダがなければ作成
+    package_dir = os.path.join(root_dir, '配布用パッケージ')
+    if not os.path.exists(package_dir):
+        os.makedirs(package_dir)
+    
+    # 配布用パッケージフォルダに保存
+    zip_path = os.path.join(package_dir, zip_filename)
+    
+    print(f"配布パッケージを作成中: {zip_filename}")
+    
+    # ZIPファイルの作成
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for file in os.listdir(dist_dir):
+            file_path = os.path.join(dist_dir, file)
+            if os.path.isfile(file_path):
+                arcname = os.path.basename(file_path)
+                print(f"追加: {arcname}")
                 zipf.write(file_path, arcname)
     
-    print("-" * 40)
-    print(f"配布パッケージを作成しました: {zip_filename}")
-    print("このZIPファイルをお客様に提供してください。")
-    return True
+    print(f"\n配布パッケージが作成されました: {zip_path}")
+    print("\n使用方法:")
+    print("1. ZIPファイルを展開")
+    print("2. Start.batをダブルクリックして実行")
+    
+    return 0
 
 if __name__ == "__main__":
-    success = create_distribution_package()
-    if not success:
-        sys.exit(1) 
+    sys.exit(main()) 
