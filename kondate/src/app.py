@@ -461,21 +461,79 @@ with tab2:
                     # Excelファイルの作成
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        final_excel_df.to_excel(writer, sheet_name='献立表', index=False)
+                        # 列と行を入れ替えて「既存献立の管理」と同じフォーマットにする
+                        # 「項目」列を作成し、「日付」「食事区分」「メニュー区分」「料理名」を項目として使用
+                        pivoted_df = final_excel_df.copy()
                         
-                        # シートの書式設定
+                        # 一度UniqueなIDを作成して、同じ日付の異なるメニューを区別する
+                        pivoted_df['unique_id'] = pivoted_df['日付'] + '_' + pivoted_df['食事区分'] + '_' + pivoted_df['メニュー区分'] + '_' + pivoted_df['料理名']
+                        
+                        # 「項目」列を作成し、メニュー区分と料理名を結合
+                        pivoted_df['項目'] = pivoted_df['メニュー区分'] + '：' + pivoted_df['料理名']
+                        
+                        # 食事区分を項目に追加（朝食/昼食/夕食を明確にする）
+                        pivoted_df['項目'] = pivoted_df['食事区分'] + '：' + pivoted_df['項目']
+                        
+                        # ピボットテーブルを作成（項目を行、日付を列に変換）
+                        pivot_table = pd.pivot_table(
+                            pivoted_df, 
+                            values='1人分量',  # 1人分量を値として使用
+                            index=['項目'],     # 項目を行インデックスに
+                            columns=['日付'],   # 日付を列に
+                            aggfunc='first'    # 同じ項目×日付の組み合わせは最初の値を使用
+                        )
+                        
+                        # NaN値を空文字に置換
+                        pivot_table = pivot_table.fillna('')
+                        
+                        # 項目を明示的に列として扱う（existing code と同じ形式に）
+                        reset_df = pivot_table.reset_index()
+                        reset_df = reset_df.rename(columns={'index': '項目'})
+                        
+                        # 最終的なデータフレームを「項目」列をインデックスとして設定
+                        final_formatted_df = reset_df.set_index('項目')
+                        
+                        # 既存献立の管理と同じ形式で出力
+                        final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
+                        
+                        # 書式設定
                         workbook = writer.book
-                        worksheet = writer.sheets['献立表']
+                        worksheet = writer.sheets['Sheet1']
                         
-                        # 列幅の調整
-                        for i, col in enumerate(final_excel_df.columns):
-                            max_len = max(
-                                final_excel_df[col].astype(str).map(len).max(),
-                                len(str(col))
-                            ) + 2
-                            # Excelの列は0から始まるのではなく、AからZ、その後AA...と続く
-                            column_letter = chr(65 + i) if i < 26 else chr(64 + i // 26) + chr(65 + i % 26)
-                            worksheet.column_dimensions[column_letter].width = min(max_len, 50)  # 最大幅を50に制限
+                        # セル書式
+                        cell_format = workbook.add_format({
+                            'font_size': 8,
+                            'font_name': 'MS Gothic',
+                            'text_wrap': True,
+                            'align': 'left',
+                            'valign': 'top'
+                        })
+                        
+                        # 列幅調整と書式適用
+                        # インデックス列（A列）を含めた列数でループ
+                        for col_num, col in enumerate(final_formatted_df.reset_index().columns):
+                            # 列幅を計算（文字数に基づく）
+                            max_width = len(str(col)) * 1.2  # ヘッダー幅
+                            
+                            if col_num == 0:  # インデックス列（項目）
+                                for cell in final_formatted_df.index.astype(str):
+                                    width = len(cell) * 1.1
+                                    max_width = max(max_width, width)
+                            else:  # データ列
+                                col_name = final_formatted_df.columns[col_num-1]
+                                for cell in final_formatted_df[col_name].astype(str):
+                                    lines = cell.split('\n')
+                                    for line in lines:
+                                        width = len(line) * 1.1
+                                        max_width = max(max_width, width)
+                            
+                            # 幅を制限（10～50の範囲）
+                            column_width = max(10, min(max_width, 50))
+                            worksheet.set_column(col_num, col_num, column_width)
+                        
+                        # 全セルに書式を適用
+                        for row in range(len(final_formatted_df) + 1):
+                            worksheet.set_row(row, None, cell_format)
                     
                     # ダウンロードボタン
                     if st.download_button(
