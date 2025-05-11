@@ -1,11 +1,25 @@
-import streamlit as st
-import pandas as pd
-from menu_updater import update_menu_with_desserts, update_menu_with_reordering, get_nutritionist_response, preview_reordering, reorder_with_llm, generate_weekly_menu, create_order_sheets
-import tempfile
 import os
+import tempfile
+import base64
 from pathlib import Path
-import datetime
+import pandas as pd
+import streamlit as st
+from datetime import date, timedelta, datetime
 import io
+
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from menu_updater import (
+    update_menu_with_desserts,
+    generate_menu_image_output,
+    create_order_sheets,
+    update_menu_with_reordering,
+    get_nutritionist_response,
+    preview_reordering,
+    reorder_with_llm,
+    generate_weekly_menu
+)
 
 # プロジェクトのルートディレクトリを取得
 ROOT_DIR = Path(__file__).parent.parent
@@ -42,7 +56,14 @@ with tab1:
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("通常出力", key="normal_output"):
+            # 出力オプションの選択ラジオボタン
+            output_option = st.radio(
+                "出力形式を選択してください",
+                ["Excel出力", "画像出力"],
+                index=0
+            )
+            
+            if st.button("メニュー出力", key="normal_output"):
                 with st.spinner("デザート追加と栄養計算を実行中..."):
                     try:
                         # 一時ファイルとして保存
@@ -50,18 +71,50 @@ with tab1:
                             tmp_input.write(uploaded_file.getvalue())
                             input_path = tmp_input.name
 
-                        # 出力用の一時ファイル名を生成
-                        output_path = str(Path(input_path).with_name('updated_menu.xlsx'))
+                        if output_option == "Excel出力":
+                            # 通常の処理を実行
+                            output_file = update_menu_with_desserts(input_path)
+                            
+                            if output_file:
+                                with open(output_file, "rb") as file:
+                                    output_data = file.read()
+                                
+                                st.success("メニュー表を更新しました！")
+                                st.download_button(
+                                    label="更新されたメニュー表をダウンロード",
+                                    data=output_data,
+                                    file_name=os.path.basename(output_file),
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                            else:
+                                st.error("メニュー表の更新に失敗しました。")
                         
-                        # メニュー更新処理を実行
-                        update_menu_with_desserts(input_path, output_path)
-
-                        # 一時入力ファイルを削除
+                        else:  # 画像出力
+                            # 画像出力処理を実行
+                            output_file = generate_menu_image_output(input_path)
+                            
+                            if output_file:
+                                with open(output_file, "rb") as file:
+                                    output_data = file.read()
+                                
+                                st.success("メニュー表の画像を作成しました！")
+                                
+                                # 画像を表示
+                                st.image(output_data, caption="メニュー表")
+                                
+                                # ダウンロードボタン
+                                st.download_button(
+                                    label="メニュー表の画像をダウンロード",
+                                    data=output_data,
+                                    file_name=os.path.basename(output_file),
+                                    mime="image/png"
+                                )
+                            else:
+                                st.error("メニュー表の画像作成に失敗しました。")
+                        
+                        # 一時ファイルを削除
                         os.unlink(input_path)
-
-                        # 完了メッセージ
-                        st.success("処理が完了しました！ファイルが自動で開かれます。")
-
+                    
                     except Exception as e:
                         st.error(f"エラーが発生しました: {str(e)}")
         
@@ -184,7 +237,7 @@ with tab2:
         # 対象期間の設定
         start_date = st.date_input(
             "献立開始日",
-            datetime.date.today() + datetime.timedelta(days=1),
+            date.today() + timedelta(days=1),
             format="YYYY/MM/DD"
         )
         
@@ -262,7 +315,7 @@ with tab2:
                             # 日付タブの作成（各週7日分）
                             start_day_idx = week_idx * 7
                             end_day_idx = start_day_idx + 7
-                            week_dates = [(start_date + datetime.timedelta(days=i)) for i in range(start_day_idx, end_day_idx)]
+                            week_dates = [(start_date + timedelta(days=i)) for i in range(start_day_idx, end_day_idx)]
                             
                             day_tabs = st.tabs([f"{date.strftime('%m/%d')}（{['月', '火', '水', '木', '金', '土', '日'][date.weekday()]}）" for date in week_dates])
                             
@@ -337,33 +390,45 @@ with tab2:
                                                             f"{person_count}人分量": []
                                                         }
                                                         
-                                                        for ingredient, amount in ingredient_info.items():
-                                                            ingredients_data["食材名"].append(ingredient)
-                                                            ingredients_data["1人分量"].append(amount)
-                                                            
-                                                            # 人数分の計算
-                                                            try:
-                                                                # 数値部分と単位を分離
-                                                                import re
-                                                                match = re.match(r"([\d.]+)(\D+)", amount)
-                                                                if match:
-                                                                    value, unit = match.groups()
-                                                                    total = float(value) * person_count
-                                                                    total_amount = f"{total}{unit}"
-                                                                else:
-                                                                    total_amount = f"{amount}×{person_count}"
-                                                            except:
-                                                                total_amount = f"{amount}×{person_count}"
+                                                        # ingredient_infoがリストの場合とディクショナリの場合の両方に対応
+                                                        if isinstance(ingredient_info, dict):
+                                                            # 辞書の場合
+                                                            for ingredient, amount in ingredient_info.items():
+                                                                ingredients_data["食材名"].append(ingredient)
+                                                                ingredients_data["1人分量"].append(amount)
                                                                 
-                                                            ingredients_data[f"{person_count}人分量"].append(total_amount)
+                                                                # 人数分の計算
+                                                                try:
+                                                                    # 数値部分と単位を分離
+                                                                    import re
+                                                                    match = re.match(r"([\d.]+)(\D+)", str(amount))
+                                                                    if match:
+                                                                        value, unit = match.groups()
+                                                                        total = float(value) * person_count
+                                                                        total_amount = f"{total}{unit}"
+                                                                    else:
+                                                                        total_amount = f"{amount}×{person_count}"
+                                                                except:
+                                                                    total_amount = f"{amount}×{person_count}"
+                                                                    
+                                                                ingredients_data[f"{person_count}人分量"].append(total_amount)
+                                                        else:
+                                                            # リストの場合
+                                                            for ingredient in ingredient_info:
+                                                                ingredients_data["食材名"].append(ingredient)
+                                                                ingredients_data["1人分量"].append("適量")
+                                                                ingredients_data[f"{person_count}人分量"].append("適量")
                                                         
                                                         # 食材テーブルを表示
                                                         st.table(pd.DataFrame(ingredients_data))
                                                         
-                                                        # Excel用データに追加（食材ごとに1行ずつではなく、メニュー項目ごとに1行）
-                                                        # 一人分と全体分の量をメインの表に追加
-                                                        one_person = ", ".join([f"{ing}: {amt}" for ing, amt in ingredient_info.items()])
-                                                        all_persons = ", ".join([f"{ing}: {amt}×{person_count}" for ing, amt in ingredient_info.items()])
+                                                        # Excel用データに追加
+                                                        if isinstance(ingredient_info, dict):
+                                                            one_person = ", ".join([f"{ing}: {amt}" for ing, amt in ingredient_info.items()])
+                                                            all_persons = ", ".join([f"{ing}: {amt}×{person_count}" for ing, amt in ingredient_info.items()])
+                                                        else:
+                                                            one_person = ", ".join([f"{ing}: 適量" for ing in ingredient_info])
+                                                            all_persons = ", ".join([f"{ing}: 適量" for ing in ingredient_info])
                                                         
                                                         week_excel_data["1人分量"].append(one_person)
                                                         week_excel_data[f"{person_count}人分量"].append(all_persons)
@@ -576,11 +641,15 @@ with tab3:
     st.header("発注書作成")
     st.write("献立表からまとめて発注書を作成します。各日の食材をまとめて1ヶ月分の発注書を生成します。")
     
-    # ファイルアップロード
-    order_file = st.file_uploader("メニューファイルを選択してください", type=['xlsx'], key="order_file")
+    # ファイルアップロード（Excelと画像ファイルの両方をサポート）
+    order_file = st.file_uploader("メニューファイルを選択してください", type=['xlsx', 'png', 'jpg', 'jpeg'], key="order_file")
     
     if order_file is not None:
         try:
+            # ファイルの種類を確認
+            file_ext = Path(order_file.name).suffix.lower()
+            is_image = file_ext in ['.png', '.jpg', '.jpeg']
+            
             # 送り先選択プルダウン
             destination = st.selectbox(
                 "発注書の送り先を選択してください",
@@ -589,44 +658,55 @@ with tab3:
             )
             
             # 人数の入力
-            person_count = st.number_input("何人分の発注書を作成しますか？", min_value=1, max_value=1000, value=45, step=1)
-            
-            # 一時ファイルとしてExcelを保存
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
-                tmp_input.write(order_file.getvalue())
-                input_path = tmp_input.name
-            
-            # 読み込んだExcelの内容を表示
-            menu_df = pd.read_excel(input_path)
+            person_count = st.number_input("何人分の発注書を作成しますか？", min_value=1, max_value=100, value=45, key="order_person_count")
             
             if st.button("発注書を作成", key="create_order"):
                 with st.spinner("発注書を作成中..."):
                     try:
-                        # 実際の発注書生成関数を呼び出し
-                        output_path = str(Path(input_path).with_name('order_sheet.xlsx'))
+                        # 一時ファイルとして保存
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_input:
+                            tmp_input.write(order_file.getvalue())
+                            input_path = tmp_input.name
                         
-                        # 発注書作成関数を呼び出し - 送り先情報も渡す
-                        create_order_sheets(input_path, output_path, person_count, destination)
+                        # 発注書の出力先を設定
+                        output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx').name
                         
-                        # 発注書をダウンロード可能にする
-                        with open(output_path, 'rb') as f:
-                            excel_data = f.read()
-                        
-                        # 一時ファイルの削除
-                        os.unlink(input_path)
-                        os.unlink(output_path)
-                        
-                        # ダウンロードボタン
-                        st.success("発注書の作成が完了しました！")
-                        st.download_button(
-                            label="発注書をダウンロード",
-                            data=excel_data,
-                            file_name="order_sheet.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        # 発注書を作成
+                        order_file_path = create_order_sheets(
+                            input_path, 
+                            output_path, 
+                            person_count=person_count, 
+                            destination=destination
                         )
+                        
+                        if order_file_path:
+                            # 出力ファイルをダウンロード用に読み込む
+                            with open(order_file_path, "rb") as file:
+                                output_data = file.read()
+                            
+                            # 一時ファイルを削除
+                            os.unlink(input_path)
+                            
+                            # ダウンロードボタンを表示
+                            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            st.download_button(
+                                label="発注書をダウンロード",
+                                data=output_data,
+                                file_name=f"発注書_{destination}_{now}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                            
+                            # 成功メッセージを表示
+                            st.success(f"{destination}向けの発注書を作成しました。")
+                        else:
+                            st.error("発注書の作成に失敗しました。")
+                    
                     except Exception as e:
-                        st.error(f"発注書作成中にエラーが発生しました: {str(e)}")
                         import traceback
-                        st.error(traceback.format_exc())
+                        print("=== 発注書作成エラー詳細 ===")
+                        print(e)
+                        traceback.print_exc()
+                        raise  # これでエラーが必ず画面に出る
+        
         except Exception as e:
-            st.error(f"ファイル読み込み中にエラーが発生しました: {str(e)}") 
+            st.error(f"処理中にエラーが発生しました: {str(e)}") 

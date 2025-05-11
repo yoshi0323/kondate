@@ -10,7 +10,6 @@ from typing import Tuple, Dict, List
 from dotenv import load_dotenv
 import re
 import csv
-import datetime
 import json
 from google.api_core.exceptions import GoogleAPIError
 
@@ -998,8 +997,17 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
         # シートを処理
         processed_data = process_all_sheets(df_dict)
         
-        # DataFrameに変換
-        result_df = pd.DataFrame(processed_data)
+        # 項目を行インデックスに、日付を列とするDataFrameを作成
+        items = processed_data['項目']
+        date_cols = [col for col in processed_data.keys() if col != '項目']
+        
+        # 各日付のデータを列に配置
+        data = {}
+        for date_col in date_cols:
+            data[date_col] = processed_data[date_col]
+            
+        # DataFrameを作成（項目をインデックスに設定）
+        result_df = pd.DataFrame(data, index=items)
         
         # 出力ファイルが指定されていない場合は一時ファイルを作成
         if output_file is None:
@@ -1009,7 +1017,8 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
         
         # ファイル保存
         with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
-            result_df.to_excel(writer, index=False, sheet_name='Sheet1')
+            # インデックスをA列に、index_labelをFalseに設定して出力
+            result_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
             
             # 書式設定
             workbook = writer.book
@@ -1025,15 +1034,22 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
             })
             
             # 列幅調整と書式適用
-            for col_num, col in enumerate(result_df.columns):
+            # インデックス列（A列）を含めた列数でループ
+            for col_num, col in enumerate(result_df.reset_index().columns):
                 # 列幅を計算（文字数に基づく）
                 max_width = len(str(col)) * 1.2  # ヘッダー幅
                 
-                for cell in result_df[col].astype(str):
-                    lines = cell.split('\n')
-                    for line in lines:
-                        width = len(line) * 1.1
+                if col_num == 0:  # インデックス列（項目）
+                    for cell in result_df.index.astype(str):
+                        width = len(cell) * 1.1
                         max_width = max(max_width, width)
+                else:  # データ列
+                    col_name = result_df.columns[col_num-1]
+                    for cell in result_df[col_name].astype(str):
+                        lines = cell.split('\n')
+                        for line in lines:
+                            width = len(line) * 1.1
+                            max_width = max(max_width, width)
                 
                 # 幅を制限（10～50の範囲）
                 column_width = max(10, min(max_width, 50))
@@ -1056,6 +1072,244 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
         
     except Exception as e:
         print(f"メニュー更新エラー: {str(e)}")
+        return None
+
+def generate_menu_image_output(input_file: str, output_file: str = None):
+    """
+    メニューファイルを読み込み、画像形式で出力する
+    元のExcelファイルと同じ形式（1行目B列以降に日付、A列に項目）で出力する
+
+    Args:
+        input_file (str): 入力ファイルのパス
+        output_file (str): 出力ファイルのパス（指定がない場合は自動生成）
+
+    Returns:
+        str: 出力ファイルのパス
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import os
+        import pandas as pd
+        
+        print(f"画像出力処理開始: {input_file}")
+        
+        # 参照用のサンプルExcelを読み込む
+        try:
+            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                                       "data", "output", "041.xlsx")
+            if os.path.exists(template_path):
+                template_df = pd.read_excel(template_path)
+                print(f"テンプレートExcelを読み込みました: {template_path}")
+            else:
+                print(f"テンプレートが見つかりません: {template_path}")
+                template_df = None
+        except Exception as e:
+            print(f"テンプレート読み込みエラー: {str(e)}")
+            template_df = None
+            
+        # 入力されたExcelファイルを読み込む
+        input_df = pd.read_excel(input_file)
+        
+        # 出力ファイルが指定されていない場合は自動生成
+        if output_file is None:
+            temp_dir = os.path.dirname(input_file)
+            base_name = os.path.splitext(os.path.basename(input_file))[0]
+            output_file = os.path.join(temp_dir, f'{base_name}_image_output.png')
+        
+        # 項目列を定義
+        items = [
+            "栄養素", 
+            "朝食", 
+            "朝食：食材", 
+            "昼食 (主菜/副菜/汁物)",
+            "昼食：食材/1人分/45人分",
+            "夕食 (主菜/副菜/小鉢/汁物)",
+            "夕食：食材/1人分/45人分"
+        ]
+        
+        # 入力データが'項目'列を持っているか確認
+        if '項目' in input_df.columns:
+            # 入力データから項目と日付を特定
+            date_cols = [col for col in input_df.columns if col != '項目']
+            
+            # 項目をインデックスに設定
+            input_df_indexed = input_df.set_index('項目')
+            
+            # テンプレート形式の新しいDataFrameを作成
+            data = {}
+            for date_col in date_cols:
+                data[date_col] = [""] * len(items)  # 各項目のデータを初期化
+            
+            # データを転記
+            for i, item in enumerate(items):
+                if item in input_df_indexed.index:
+                    for date_col in date_cols:
+                        if date_col in input_df_indexed.columns:
+                            data[date_col][i] = input_df_indexed.loc[item, date_col]
+            
+            # 結果用DataFrameを作成
+            result_df = pd.DataFrame(data, index=items)
+        else:
+            # 入力データが既に転置された形式である場合
+            result_df = input_df.copy()
+            # インデックスに項目を設定
+            if len(result_df) >= len(items):
+                result_df = result_df.iloc[:len(items)]
+                result_df.index = items
+            else:
+                # 行が足りない場合は拡張
+                new_df = pd.DataFrame(index=items)
+                for col in result_df.columns:
+                    new_df[col] = ""
+                # 既存データをコピー
+                for i, idx in enumerate(result_df.index):
+                    if i < len(items):
+                        item = items[i]
+                        for col in result_df.columns:
+                            new_df.loc[item, col] = result_df.loc[idx, col]
+                result_df = new_df
+        
+        # 行と列の設定
+        num_rows = len(result_df)
+        num_cols = len(result_df.columns) + 1  # インデックス列を含む
+        
+        # 列の幅と行の高さを設定
+        col_widths = [120]  # 項目列の幅
+        for i in range(1, num_cols):
+            col_widths.append(150)  # 日付列の幅
+            
+        row_heights = [30]  # ヘッダー行の高さ
+        for i in range(num_rows):
+            # データの量に応じて行の高さを可変にする
+            max_lines = 1
+            for col in result_df.columns:
+                cell_text = str(result_df.iloc[i][col])
+                lines = len(cell_text.split('\n'))
+                max_lines = max(max_lines, lines)
+            
+            row_height = max(30, max_lines * 20)  # 1行あたり20px、最小30px
+            row_heights.append(row_height)
+        
+        # 画像のサイズを計算
+        total_width = sum(col_widths)
+        total_height = sum(row_heights)
+        
+        # 画像を作成
+        img = Image.new('RGB', (total_width, total_height), color='white')
+        draw = ImageDraw.Draw(img)
+        
+        # フォントの設定
+        try:
+            font_path = "C:\\Windows\\Fonts\\msgothic.ttc"
+            header_font = ImageFont.truetype(font_path, 12)
+            cell_font = ImageFont.truetype(font_path, 10)
+        except:
+            # フォントが見つからない場合はデフォルトフォント
+            header_font = ImageFont.load_default()
+            cell_font = ImageFont.load_default()
+        
+        # ヘッダー行の描画（項目列と日付列）
+        x_pos = 0
+        y_pos = 0
+        
+        # 左上の空白セル
+        draw.rectangle(
+            [(x_pos, y_pos), (x_pos + col_widths[0], y_pos + row_heights[0])],
+            fill='#d3d3d3',
+            outline='black'
+        )
+        draw.text(
+            (x_pos + 5, y_pos + 5),
+            "項目",
+            font=header_font,
+            fill='black'
+        )
+        x_pos += col_widths[0]
+        
+        # 日付列のヘッダー
+        for col_idx, col_name in enumerate(result_df.columns):
+            draw.rectangle(
+                [(x_pos, y_pos), (x_pos + col_widths[col_idx+1], y_pos + row_heights[0])],
+                fill='#d3d3d3',
+                outline='black'
+            )
+            draw.text(
+                (x_pos + 5, y_pos + 5),
+                str(col_name),
+                font=header_font,
+                fill='black'
+            )
+            x_pos += col_widths[col_idx+1]
+        
+        # データ行の描画
+        current_y = row_heights[0]  # ヘッダー行の後から開始
+        
+        for row_idx, item in enumerate(result_df.index):
+            # 項目列
+            x_pos = 0
+            row_height = row_heights[row_idx + 1]
+            
+            # 項目セルの描画
+            draw.rectangle(
+                [(x_pos, current_y), (x_pos + col_widths[0], current_y + row_height)],
+                outline='black',
+                fill='white'
+            )
+            draw.text(
+                (x_pos + 5, current_y + 5),
+                str(item),
+                font=cell_font,
+                fill='black'
+            )
+            x_pos += col_widths[0]
+            
+            # 各日付のデータセル
+            for col_idx, col_name in enumerate(result_df.columns):
+                cell_value = result_df.loc[item, col_name]
+                cell_text = str(cell_value) if pd.notna(cell_value) else ""
+                
+                # セルの枠線
+                draw.rectangle(
+                    [(x_pos, current_y), (x_pos + col_widths[col_idx+1], current_y + row_height)],
+                    outline='black',
+                    fill='white'  # 白背景
+                )
+                
+                # セルのテキスト描画（複数行対応）
+                if cell_text:
+                    # 長いテキストは複数行に分割
+                    lines = cell_text.split('\n')
+                    for line_idx, line in enumerate(lines):
+                        draw.text(
+                            (x_pos + 5, current_y + 5 + (line_idx * 16)),  # 行間16ピクセル
+                            line,
+                            font=cell_font,
+                            fill='black'
+                        )
+                
+                x_pos += col_widths[col_idx+1]
+            
+            current_y += row_height
+        
+        # 画像を保存
+        img.save(output_file)
+        print(f"画像ファイル保存完了: {output_file}")
+        
+        # 画像ファイルを自動で開く
+        if os.path.exists(output_file):
+            if os.name == 'posix':  # macOS または Linux
+                import subprocess
+                subprocess.run(["open", str(output_file)])
+            elif os.name == 'nt':   # Windows
+                import subprocess
+                subprocess.run(["start", str(output_file)], shell=True)
+        
+        return output_file
+        
+    except Exception as e:
+        print(f"画像出力エラー: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return None
 
 def calculate_nutrition_for_menu(menu_data):
@@ -2174,14 +2428,25 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
         destination (str): 発注書の送り先（宝成または豊中）
         
     Returns:
-        None
+        str: 作成された発注書のファイルパス、失敗した場合はNone
     """
     try:
+        print(f"発注書作成開始: 入力={input_file}, 出力={output_file}")
+        
         # Excelファイルの読み込み
         menu_df = pd.read_excel(input_file)
+        print(f"Excelファイル読み込み完了: {len(menu_df)}行")
         
-        # 日付列の特定（"項目"列を除外）
-        date_columns = [col for col in menu_df.columns if col != '項目']
+        # データフレームの列情報を出力
+        print(f"列一覧: {menu_df.columns.tolist()}")
+        
+        # 最初の列をアイテム列として使用
+        item_col = menu_df.columns[0]
+        print(f"アイテム列: {item_col}")
+        
+        # 日付列の特定（最初の列を除く全列）
+        date_columns = [col for col in menu_df.columns if col != item_col]
+        print(f"日付列: {date_columns}")
         
         # 各日付ごとの食材リスト
         all_ingredients_by_date = {}
@@ -2208,6 +2473,10 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
         
         # 食材かどうかを判定する関数
         def is_food_item(item_name, amount):
+            # 項目名が文字列でない場合はFalse
+            if not isinstance(item_name, str):
+                return False
+                
             # 除外キーワードを含む場合はFalse
             for keyword in exclude_keywords:
                 if keyword in item_name:
@@ -2219,49 +2488,73 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                     return False
             
             # 単位がgやkg、個などが含まれていたり、数値を含む場合はTrue
-            has_unit = any(unit in amount for unit in ['g', 'kg', '個', 'ml', 'L', 'cc', '本', '枚', '袋'])
-            has_number = any(char.isdigit() for char in amount)
+            if isinstance(amount, str):
+                has_unit = any(unit in amount for unit in ['g', 'kg', '個', 'ml', 'L', 'cc', '本', '枚', '袋'])
+                has_number = any(char.isdigit() for char in amount)
+                return has_unit or has_number
+            elif isinstance(amount, (int, float)):
+                # 数値そのものの場合もTrue
+                return True
             
-            return has_unit or has_number
+            return False
         
         # 数量の小数点以下を切り捨てる関数
         def truncate_decimal(amount_str):
+            if not isinstance(amount_str, str):
+                return str(amount_str)
+                
             import re
-            # 数字を抽出
             match = re.search(r'([\d.]+)([^0-9.]*)', amount_str)
             if match:
                 number_part = match.group(1)
                 unit_part = match.group(2)
-                
-                # 小数点があれば切り捨て
                 if '.' in number_part:
                     integer_part = number_part.split('.')[0]
                     return f"{integer_part}{unit_part}"
-            
             return amount_str
         
-        # 日付ごとに食材を処理
+        # 日付列ごとに食材を抽出
         for date_col in date_columns:
-            # この日付の食材リスト
+            print(f"処理中の日付: {date_col}")
             ingredients_list = []
             
-            # すべての行を処理
+            # 各行を処理
             for i in range(len(menu_df)):
-                dish_name = menu_df.iloc[i]['項目']
-                cell_content = menu_df.iloc[i][date_col]
+                # 項目名と内容を取得（NaNや欠損値対策）
+                try:
+                    dish_name = menu_df.iloc[i][item_col]
+                    # セルの内容がNaNの場合は空文字に変換
+                    if pd.isna(dish_name):
+                        dish_name = ""
+                except:
+                    dish_name = ""
+                
+                try:
+                    cell_content = menu_df.iloc[i][date_col]
+                    # セルの内容がNaNの場合は空文字に変換
+                    if pd.isna(cell_content):
+                        cell_content = ""
+                except:
+                    cell_content = ""
                 
                 # 有効なセル内容のみ処理
-                if pd.notna(dish_name) and pd.notna(cell_content) and isinstance(cell_content, str):
+                if dish_name and cell_content:
+                    # 数値を文字列に変換
+                    dish_name_str = str(dish_name)
+                    cell_content_str = str(cell_content)
+                    
                     # 1日の栄養価合計などの行は除外
-                    if any(keyword in str(dish_name) for keyword in exclude_keywords):
+                    if any(keyword in dish_name_str for keyword in exclude_keywords):
                         continue
                     
-                    # 階層構造の食材リストを処理
-                    if "- " in cell_content and ("/" in cell_content or "g" in cell_content):
-                        # 複数行に分かれている可能性があるため、行ごとに分割
-                        lines = cell_content.split('\n')
+                    # 改行で分割できる場合は複数行データとして処理
+                    if "\n" in cell_content_str:
+                        # 行に分割
+                        lines = cell_content_str.split('\n')
                         for line in lines:
+                            # 各行を処理
                             line = line.strip()
+                            # 箇条書き形式の行を処理
                             if line.startswith("- "):
                                 # 「- 食材名: 量」の形式を解析
                                 parts = line[2:].split(":", 1)
@@ -2279,31 +2572,16 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                                             truncated_amount = truncate_decimal(amount)
                                         
                                         ingredients_list.append((food_name, truncated_amount))
-                                elif "/" in line:
-                                    # 「- 食材名 量/総量」の形式を解析
-                                    name_parts = line[2:].split()
-                                    if len(name_parts) >= 2:
-                                        food_name = " ".join(name_parts[:-1])
-                                        amount = name_parts[-1]
-                                        
-                                        # 食材として有効か確認
-                                        if is_food_item(food_name, amount):
-                                            # 小数点以下を切り捨て
-                                            if '/' in amount:
-                                                parts = amount.split('/')
-                                                truncated_amount = '/'.join([truncate_decimal(p) for p in parts])
-                                            else:
-                                                truncated_amount = truncate_decimal(amount)
-                                            
-                                            ingredients_list.append((food_name, truncated_amount))
-                    # 通常の食材データとして処理
-                    elif isinstance(dish_name, str) and dish_name not in ['朝食', '昼食', '夕食'] and cell_content:
-                        # メニュー情報（食事区分のタイトルなど）でないことを確認
-                        if not any(keyword in dish_name for keyword in ['(主菜', '(副菜', '(汁物']) and not any(keyword in str(cell_content) for keyword in exclude_keywords):
-                            amount = str(cell_content)
+                    # コロン区切りのデータを処理
+                    elif ":" in cell_content_str or "：" in cell_content_str:
+                        # コロンで区切る（全角コロンも対応）
+                        parts = cell_content_str.replace("：", ":").split(":", 1)
+                        if len(parts) == 2:
+                            food_name = parts[0].strip()
+                            amount = parts[1].strip()
                             
                             # 食材として有効か確認
-                            if is_food_item(dish_name, amount):
+                            if is_food_item(food_name, amount):
                                 # 小数点以下を切り捨て
                                 if '/' in amount:
                                     parts = amount.split('/')
@@ -2311,10 +2589,30 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                                 else:
                                     truncated_amount = truncate_decimal(amount)
                                 
-                                ingredients_list.append((dish_name, truncated_amount))
+                                ingredients_list.append((food_name, truncated_amount))
+                    # その他の形式（dish_nameが食材名、cell_contentが量）
+                    elif dish_name and cell_content and not dish_name_str.startswith("朝食") and not dish_name_str.startswith("昼食") and not dish_name_str.startswith("夕食"):
+                        # 食事区分のタイトル行を除外
+                        if not any(keyword in dish_name_str for keyword in ['(主菜', '(副菜', '(汁物']):
+                            amount = cell_content_str
+                            
+                            # 食材として有効か確認
+                            if is_food_item(dish_name_str, amount):
+                                # 小数点以下を切り捨て
+                                if '/' in amount:
+                                    parts = amount.split('/')
+                                    truncated_amount = '/'.join([truncate_decimal(p) for p in parts])
+                                else:
+                                    truncated_amount = truncate_decimal(amount)
+                                
+                                ingredients_list.append((dish_name_str, truncated_amount))
             
             # この日付の食材リストを保存
-            all_ingredients_by_date[date_col] = ingredients_list
+            if ingredients_list:
+                print(f"日付 {date_col} の食材数: {len(ingredients_list)}")
+                all_ingredients_by_date[date_col] = ingredients_list
+            else:
+                print(f"日付 {date_col} の食材は見つかりませんでした")
         
         # 日付を2日ごとにグループ化
         date_pairs = []
@@ -2331,16 +2629,17 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
         elif destination == "豊中":
             header_text = "株式会社　豊中商店　御中"
         
+        print(f"食材データ抽出完了。発注書作成開始...")
+        
         # 出力用のExcelファイルを作成
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # 2日分ずつシートを作成
             for pair_idx, (date1, date2) in enumerate(date_pairs):
                 # シート名の設定
                 sheet_name = f"発注書_{pair_idx+1}"
                 
                 # 発注書データの作成
                 order_data = {
-                    'A': [''] * 100,  # 十分な行数を確保
+                    'A': [''] * 100,
                     'B': [''] * 100,
                     'C': [''] * 100,
                     'D': [''] * 100,
@@ -2353,11 +2652,15 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                 
                 # 食品名と使用量のヘッダー
                 order_data['A'][3] = '食品名'
-                order_data['B'][3] = f'{date1}使用分' if '/' in date1 else f'{date1}使用分'
+                # 日付列のフォーマット (安全に str() 変換)
+                date1_str = str(date1)
+                order_data['B'][3] = f'{date1_str}使用分'
+                
                 if date2:
-                    order_data['C'][3] = ''  # 空白列
+                    date2_str = str(date2)
+                    order_data['C'][3] = ''
                     order_data['D'][3] = '食品名'
-                    order_data['E'][3] = f'{date2}使用分' if '/' in date2 else f'{date2}使用分'
+                    order_data['E'][3] = f'{date2_str}使用分'
                 
                 # 1日目の食材を追加
                 food_items1 = all_ingredients_by_date.get(date1, [])
@@ -2366,11 +2669,15 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                     order_data['A'][row_idx] = name
                     
                     # 「/」で個人分と総量が指定されている場合は総量のみ使用
-                    if "/" in amount:
-                        total_amount = amount.split("/")[-1] if amount else amount
-                        order_data['B'][row_idx] = total_amount
+                    amount_str = str(amount)  # 安全に文字列変換
+                    if "/" in amount_str:
+                        try:
+                            total_amount = amount_str.split("/")[-1]
+                            order_data['B'][row_idx] = total_amount
+                        except:
+                            order_data['B'][row_idx] = amount_str
                     else:
-                        order_data['B'][row_idx] = amount
+                        order_data['B'][row_idx] = amount_str
                 
                 # 2日目の食材を追加
                 if date2:
@@ -2380,11 +2687,15 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                         order_data['D'][row_idx] = name
                         
                         # 「/」で個人分と総量が指定されている場合は総量のみ使用
-                        if "/" in amount:
-                            total_amount = amount.split("/")[-1] if amount else amount
-                            order_data['E'][row_idx] = total_amount
+                        amount_str = str(amount)  # 安全に文字列変換
+                        if "/" in amount_str:
+                            try:
+                                total_amount = amount_str.split("/")[-1]
+                                order_data['E'][row_idx] = total_amount
+                            except:
+                                order_data['E'][row_idx] = amount_str
                         else:
-                            order_data['E'][row_idx] = amount
+                            order_data['E'][row_idx] = amount_str
                 
                 # DataFrameに変換
                 order_df = pd.DataFrame(order_data)
@@ -2412,27 +2723,13 @@ def create_order_sheets(input_file, output_file, person_count=45, destination="�
                     cell = worksheet[f'{col}4']
                     cell.font = Font(bold=True)
                     cell.alignment = Alignment(horizontal='center')
-                
-                # 罫線の設定
-                from openpyxl.styles import Border, Side
-                thin_border = Border(
-                    left=Side(style='thin'),
-                    right=Side(style='thin'),
-                    top=Side(style='thin'),
-                    bottom=Side(style='thin')
-                )
-                
-                # 食品名と使用量の枠に罫線を追加
-                max_rows = max(len(food_items1), len(food_items2) if date2 else 0)
-                for row in range(4, 4 + max_rows + 1):
-                    for col in ['A', 'B', 'D', 'E']:
-                        cell = worksheet[f'{col}{row}']
-                        cell.border = thin_border
         
-        return True
-    
+        print(f"発注書の作成が完了しました: {output_file}")
+        return output_file
+        
     except Exception as e:
-        print(f"発注書作成中にエラーが発生しました: {str(e)}")
         import traceback
+        print("=== 発注書作成エラー詳細 ===")
+        print(e)
         traceback.print_exc()
-        raise e
+        return None
