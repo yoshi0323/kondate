@@ -4,7 +4,8 @@ import base64
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-from datetime import date, timedelta, datetime
+import datetime
+from datetime import date, timedelta
 import io
 
 import sys
@@ -458,82 +459,138 @@ with tab2:
                     # エクスポートオプション
                     st.write(f"### 献立のエクスポート ({selected_weeks}週間分)")
                     
+                    # ピボットテーブル処理 - データ変換
+                    # 「項目」列を作成し、「日付」「食事区分」「メニュー区分」「料理名」を項目として使用
+                    pivoted_df = final_excel_df.copy()
+                    
+                    # 一度UniqueなIDを作成して、同じ日付の異なるメニューを区別する
+                    pivoted_df['unique_id'] = pivoted_df['日付'] + '_' + pivoted_df['食事区分'] + '_' + pivoted_df['メニュー区分'] + '_' + pivoted_df['料理名']
+                    
+                    # 「項目」列を作成し、メニュー区分と料理名を結合
+                    pivoted_df['項目'] = pivoted_df['メニュー区分'] + '：' + pivoted_df['料理名']
+                    
+                    # 食事区分を項目に追加（朝食/昼食/夕食を明確にする）
+                    pivoted_df['項目'] = pivoted_df['食事区分'] + '：' + pivoted_df['項目']
+                    
+                    # ピボットテーブルを作成（項目を行、日付を列に変換）
+                    pivot_table = pd.pivot_table(
+                        pivoted_df, 
+                        values='1人分量',  # 1人分量を値として使用
+                        index=['項目'],     # 項目を行インデックスに
+                        columns=['日付'],   # 日付を列に
+                        aggfunc='first'    # 同じ項目×日付の組み合わせは最初の値を使用
+                    )
+                    
+                    # NaN値を空文字に置換
+                    pivot_table = pivot_table.fillna('')
+                    
+                    # 項目を明示的に列として扱う（existing code と同じ形式に）
+                    reset_df = pivot_table.reset_index()
+                    reset_df = reset_df.rename(columns={'index': '項目'})
+                    
+                    # 最終的なデータフレームを「項目」列をインデックスとして設定
+                    final_formatted_df = reset_df.set_index('項目')
+                    
                     # Excelファイルの作成
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        # 列と行を入れ替えて「既存献立の管理」と同じフォーマットにする
-                        # 「項目」列を作成し、「日付」「食事区分」「メニュー区分」「料理名」を項目として使用
-                        pivoted_df = final_excel_df.copy()
-                        
-                        # 一度UniqueなIDを作成して、同じ日付の異なるメニューを区別する
-                        pivoted_df['unique_id'] = pivoted_df['日付'] + '_' + pivoted_df['食事区分'] + '_' + pivoted_df['メニュー区分'] + '_' + pivoted_df['料理名']
-                        
-                        # 「項目」列を作成し、メニュー区分と料理名を結合
-                        pivoted_df['項目'] = pivoted_df['メニュー区分'] + '：' + pivoted_df['料理名']
-                        
-                        # 食事区分を項目に追加（朝食/昼食/夕食を明確にする）
-                        pivoted_df['項目'] = pivoted_df['食事区分'] + '：' + pivoted_df['項目']
-                        
-                        # ピボットテーブルを作成（項目を行、日付を列に変換）
-                        pivot_table = pd.pivot_table(
-                            pivoted_df, 
-                            values='1人分量',  # 1人分量を値として使用
-                            index=['項目'],     # 項目を行インデックスに
-                            columns=['日付'],   # 日付を列に
-                            aggfunc='first'    # 同じ項目×日付の組み合わせは最初の値を使用
-                        )
-                        
-                        # NaN値を空文字に置換
-                        pivot_table = pivot_table.fillna('')
-                        
-                        # 項目を明示的に列として扱う（existing code と同じ形式に）
-                        reset_df = pivot_table.reset_index()
-                        reset_df = reset_df.rename(columns={'index': '項目'})
-                        
-                        # 最終的なデータフレームを「項目」列をインデックスとして設定
-                        final_formatted_df = reset_df.set_index('項目')
-                        
-                        # 既存献立の管理と同じ形式で出力
-                        final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
-                        
-                        # 書式設定
-                        workbook = writer.book
-                        worksheet = writer.sheets['Sheet1']
-                        
-                        # セル書式
-                        cell_format = workbook.add_format({
-                            'font_size': 8,
-                            'font_name': 'MS Gothic',
-                            'text_wrap': True,
-                            'align': 'left',
-                            'valign': 'top'
-                        })
-                        
-                        # 列幅調整と書式適用
-                        # インデックス列（A列）を含めた列数でループ
-                        for col_num, col in enumerate(final_formatted_df.reset_index().columns):
-                            # 列幅を計算（文字数に基づく）
-                            max_width = len(str(col)) * 1.2  # ヘッダー幅
+                    try:
+                        # まずxlsxwriterでの出力を試みる（書式設定が容易）
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            # 既存献立の管理と同じ形式で出力
+                            final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True)
                             
-                            if col_num == 0:  # インデックス列（項目）
-                                for cell in final_formatted_df.index.astype(str):
-                                    width = len(cell) * 1.1
-                                    max_width = max(max_width, width)
-                            else:  # データ列
-                                col_name = final_formatted_df.columns[col_num-1]
-                                for cell in final_formatted_df[col_name].astype(str):
-                                    lines = cell.split('\n')
-                                    for line in lines:
-                                        width = len(line) * 1.1
+                            # 書式設定
+                            workbook = writer.book
+                            worksheet = writer.sheets['Sheet1']
+                            
+                            # セル書式
+                            cell_format = workbook.add_format({
+                                'font_size': 8,
+                                'font_name': 'MS Gothic',
+                                'text_wrap': True,
+                                'align': 'left',
+                                'valign': 'top'
+                            })
+                            
+                            # 列幅調整と書式適用
+                            for col_num, col in enumerate(final_formatted_df.reset_index().columns):
+                                # 列幅を計算（文字数に基づく）
+                                max_width = len(str(col)) * 1.2  # ヘッダー幅
+                                
+                                if col_num == 0:  # インデックス列（項目）
+                                    for cell in final_formatted_df.index.astype(str):
+                                        width = len(cell) * 1.1
                                         max_width = max(max_width, width)
+                                else:  # データ列
+                                    col_name = final_formatted_df.columns[col_num-1]
+                                    for cell in final_formatted_df[col_name].astype(str):
+                                        lines = cell.split('\n')
+                                        for line in lines:
+                                            width = len(line) * 1.1
+                                            max_width = max(max_width, width)
+                                
+                                # 幅を制限（10～50の範囲）
+                                column_width = max(10, min(max_width, 50))
+                                worksheet.set_column(col_num, col_num, column_width)
                             
-                            # 幅を制限（10～50の範囲）
-                            column_width = max(10, min(max_width, 50))
-                            worksheet.set_column(col_num, col_num, column_width)
+                            # 全セルに書式を適用
+                            for row in range(len(final_formatted_df) + 1):
+                                worksheet.set_row(row, None, cell_format)
+                    
+                    except Exception as e:
+                        # xlsxwriterが利用できない場合はopenpyxlにフォールバック
+                        print(f"xlsxwriterでの書き出しに失敗しました: {str(e)}")
+                        print("openpyxlエンジンを使用します")
                         
-                        # 全セルに書式を適用
-                        for row in range(len(final_formatted_df) + 1):
-                            worksheet.set_row(row, None, cell_format)
+                        # 新しいメモリストリームを作成（前のは使い切っている可能性がある）
+                        output = io.BytesIO()
+                        
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            # 既存献立の管理と同じ形式で出力
+                            final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True)
+                            
+                            # openpyxlでの書式設定
+                            workbook = writer.book
+                            worksheet = writer.sheets['Sheet1']
+                            
+                            # openpyxlでの列幅調整
+                            for col_num, col in enumerate(final_formatted_df.reset_index().columns):
+                                # 列幅を計算（文字数に基づく）
+                                max_width = len(str(col)) * 1.2  # ヘッダー幅
+                                
+                                if col_num == 0:  # インデックス列（項目）
+                                    for cell in final_formatted_df.index.astype(str):
+                                        width = len(cell) * 1.1
+                                        max_width = max(max_width, width)
+                                else:  # データ列
+                                    col_name = final_formatted_df.columns[col_num-1]
+                                    for cell in final_formatted_df[col_name].astype(str):
+                                        lines = cell.split('\n')
+                                        for line in lines:
+                                            width = len(line) * 1.1
+                                            max_width = max(max_width, width)
+                                
+                                # 幅を制限（10～50の範囲）
+                                column_width = max(10, min(max_width, 50))
+                                
+                                # openpyxlでの列幅設定（インデックスが0から始まる）
+                                col_letter = worksheet.cell(row=1, column=col_num+1).column_letter
+                                worksheet.column_dimensions[col_letter].width = column_width
+                            
+                            try:
+                                # openpyxlでのフォント設定 (全セルに適用)
+                                from openpyxl.styles import Font, Alignment
+                                font = Font(name='MS Gothic', size=8)
+                                alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                                
+                                # ヘッダー行を含めた全行、全列のループ
+                                for row in worksheet.iter_rows():
+                                    for cell in row:
+                                        cell.font = font
+                                        cell.alignment = alignment
+                            except Exception as style_err:
+                                print(f"セルスタイル適用中にエラーが発生しました: {str(style_err)}")
+                                # スタイル適用に失敗しても処理を続行
                     
                     # ダウンロードボタン
                     if st.download_button(
@@ -746,7 +803,7 @@ with tab3:
                             os.unlink(input_path)
                             
                             # ダウンロードボタンを表示
-                            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             st.download_button(
                                 label="発注書をダウンロード",
                                 data=output_data,

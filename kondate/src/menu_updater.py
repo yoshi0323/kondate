@@ -5,7 +5,7 @@ import random
 import subprocess
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Tuple, Dict, List
 from dotenv import load_dotenv
 import re
@@ -1800,51 +1800,130 @@ def reorder_with_llm(all_meals, all_nutrition, strategy, target_weekday=None, ta
         try:
             response_text = response.text
             
+            # デバッグ出力
+            print("LLM応答テキスト:")
+            print(response_text[:200] + "..." if len(response_text) > 200 else response_text)
+            
             # JSON部分を抽出（マークダウンコードブロックが含まれる可能性がある）
             import re
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
             if json_match:
                 json_str = json_match.group(1)
+                print("JSONブロックを抽出しました")
             else:
-                json_str = response_text
+                # コードブロックがない場合は、可能な限りJSONと思われる部分を抽出
+                print("JSONブロックが見つかりません。全テキストから抽出を試みます。")
+                # 波括弧の最初と最後を探す
+                first_brace = response_text.find('{')
+                last_brace = response_text.rfind('}')
+                if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+                    json_str = response_text[first_brace:last_brace+1]
+                    print(f"JSON部分を抽出しました: {first_brace}〜{last_brace}")
+                else:
+                    json_str = response_text
+                    print("JSON構造が見つかりませんでした。全テキストを使用します。")
             
-            result = json.loads(json_str)
+            # JSONを整形する前処理
+            # コメントの削除
+            json_str = re.sub(r'//.*?\n', '\n', json_str)
+            json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
             
-            # 並び替え順序を取得
-            reordered_dates = result.get("reordered_dates", [])
-            rationale = result.get("rationale", "")
+            # 末尾のカンマを削除（JSON配列や辞書の最後の要素の後のカンマ）
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
             
-            print(f"LLMによる並び替え理由: {rationale}")
+            # プロパティ名の引用符がない場合に追加
+            json_str = re.sub(r'(\s*)([a-zA-Z0-9_]+)(\s*):(\s*)', r'\1"\2"\3:\4', json_str)
             
-            # 元のメニューを新しい順序で再構成
-            reordered_menu = {}
-            for date in reordered_dates:
-                if date in all_meals:
-                    reordered_menu[date] = all_meals[date]
+            # テンプレート文字列を実際の値に置換（{{...}} を解決）
+            json_str = re.sub(r'{{([^}]+)}}', r'{\1}', json_str)
+
+            # 不正な形式の配列を修正 ({"key": value, item1, item2} → {"key": value, "items": [item1, item2]})
+            json_str = re.sub(r'({[^{}]*)"([^"]+)"(\s*:\s*{[^{}]*}),\s*"([^"]+)",\s*"([^"]+)"([^{}]*})', 
+                            r'\1"\2"\3, "\4": "", "\5": ""\6', json_str)
             
-            # 何らかの理由で全ての日付が含まれていない場合、残りを追加
-            for date in all_meals:
-                if date not in reordered_menu:
-                    reordered_menu[date] = all_meals[date]
+            # JSONの修復：不正な形式のmealオブジェクトを修正 {"meals": {"朝食": {"メニュー1", "メニュー2"}}} → {"meals": {"朝食": ["メニュー1", "メニュー2"]}}
+            json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]+)}', lambda m: f'"{m.group(1)}": [{m.group(2).replace("\"", "").replace(",", "\",\"")}]', json_str)
             
-            # メニューと理由を両方返す
-            return reordered_menu, rationale
+            # 標準のJSONパーサーでパース
+            try:
+                print("JSONパースを試みます...")
+                result = json.loads(json_str)
+                print("JSONパース成功")
+            except json.JSONDecodeError as je:
+                # エラー位置の周辺テキストを表示
+                print(f"JSON解析エラー: {str(je)}")
+                error_pos = je.pos
+                context_start = max(0, error_pos - 40)
+                context_end = min(len(json_str), error_pos + 40)
+                error_context = json_str[context_start:context_end]
+                print(f"エラー周辺: ...{error_context}...")
+                print(f"エラー位置: {'^'.rjust(min(40, error_pos - context_start) + 3)}")
+                
+                # JSON修復を試みる
+                try:
+                    # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
+                    corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
+                                        r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                    
+                    # もう一度パースを試みる
+                    try:
+                        result = json.loads(corrected_json)
+                        print("JSON修復に成功しました")
+                    except:
+                        # 修復に失敗した場合はフォールバック
+                        raise
+                except:
+                    # バックアッププランとして、より簡易的な構造を作成
+                    print("完全なフォールバックメニューを生成します")
+                    result = create_fallback_menu(date_infos)
             
-        except (json.JSONDecodeError, KeyError) as e:
+            # 日付形式が正しいか確認し、必要に応じて修正
+            corrected_result = {}
+            for i, date_info in enumerate(date_infos):
+                expected_date = date_info['date']
+                # 結果に期待する日付が含まれていない場合は追加
+                if expected_date not in result:
+                    # 何らかの別の日付キーが使われている可能性があるため検索
+                    found = False
+                    for key in result.keys():
+                        if isinstance(key, str) and (key.endswith(expected_date[-5:]) or key.startswith(expected_date[:7])):
+                            corrected_result[expected_date] = result[key]
+                            found = True
+                            break
+                    # それでも見つからない場合はi番目のデータを使用（ある場合）
+                    if not found and i < len(list(result.keys())):
+                        corrected_result[expected_date] = result[list(result.keys())[i]]
+                else:
+                    corrected_result[expected_date] = result[expected_date]
+            
+            # 食材情報がない場合は空のオブジェクトを追加
+            for date_key, menu_data in corrected_result.items():
+                if "ingredients" not in menu_data:
+                    menu_data["ingredients"] = {}
+                    # メニュー項目ごとに空の食材情報を追加
+                    for meal_type, items in menu_data.get("meals", {}).items():
+                        if meal_type not in menu_data["ingredients"]:
+                            menu_data["ingredients"][meal_type] = {}
+                        # 各料理に空の食材情報を追加
+                        for item in items:
+                            if item not in menu_data["ingredients"][meal_type]:
+                                menu_data["ingredients"][meal_type][item] = {"材料情報なし": "量不明"}
+            
+            # 少なくとも1つの結果があれば修正結果を返す
+            if corrected_result:
+                return corrected_result
+            else:
+                return result  # 元の結果を返す
+            
+        except Exception as e:
             print(f"LLMの応答解析エラー: {str(e)}")
-            # フォールバック: 標準的な並び替えを使用
-            if strategy == "曜日指定並び替え" and target_weekday and target_genre:
-                return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "LLM処理中にエラーが発生したため、従来のアルゴリズムで並び替えました。"
-            else:
-                return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "LLM処理中にエラーが発生したため、従来のアルゴリズムで並び替えました。"
+            import traceback
+            traceback.print_exc()
             
-    except GoogleAPIError as e:
-        print(f"Google API エラー: {str(e)}")
-        # フォールバック: 標準的な並び替えを使用
-        if strategy == "曜日指定並び替え" and target_weekday and target_genre:
-            return reorder_by_weekday_genre(all_meals, all_nutrition, target_weekday, target_genre), "Google APIエラーのため、従来のアルゴリズムで並び替えました。"
-        else:
-            return reorder_menu_by_strategy(all_meals, all_nutrition, strategy), "Google APIエラーのため、従来のアルゴリズムで並び替えました。"
+            # フォールバック：基本的な構造のデータを返す
+            fallback_data = create_fallback_menu(date_infos)
+            return fallback_data
+            
     except Exception as e:
         print(f"LLM並び替え中の予期せぬエラー: {str(e)}")
         # フォールバック: 標準的な並び替えを使用
@@ -2101,7 +2180,7 @@ def generate_weekly_menu(days, params):
         # 日付情報の作成（現在の日付から正確に計算）
         date_infos = []
         for i in range(days):
-            curr_date = start_date + datetime.timedelta(days=i)
+            curr_date = start_date + timedelta(days=i)
             weekday = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][curr_date.weekday()]
             date_str = curr_date.strftime("%Y-%m-%d")
             date_display = curr_date.strftime("%m月%d日")
@@ -2135,11 +2214,15 @@ def generate_weekly_menu(days, params):
         """
         
         prompt_format = """
-        【重要】以下の指示に厳密に従ってJSON形式のデータを出力してください：
-        1. JSONにはコメントを含めないでください
-        2. プロパティ名と値は必ず二重引用符で囲んでください
-        3. 配列や辞書の最後の要素の後にカンマを置かないでください
-        4. シンプルな構造を保ち、ネストは最小限に抑えてください
+        【非常に重要：必ず守ってください】以下の指示に厳密に従ってJSON形式のデータを出力してください：
+        1. 必ず正確なJSON形式で出力してください
+        2. JSONにはコメントや説明文を含めないでください
+        3. すべてのプロパティ名と文字列値は必ず二重引用符で囲んでください
+        4. 配列や辞書の最後の要素の後にカンマを置かないでください
+        5. 配列は必ず [] で囲み、各要素はカンマで区切ってください
+        6. オブジェクトは必ず {} で囲み、キーと値のペアはコロン(:)で区切ってください
+        7. 次に示すサンプルと全く同じ構造を守ってください
+        8. 途中で構造を変えたり、説明を挟んだりしないでください
         """
         
         # サンプルJSONは文字列リテラルで直接記述し、f-stringの入れ子を避ける
@@ -2187,8 +2270,18 @@ def generate_weekly_menu(days, params):
         '''
         
         prompt_footer = f"""
-        実際には{days}日分のデータを生成し、日付は必ず{formatted_dates}の形式で表記してください。
+        【重要】実際には{days}日分のデータを生成し、日付は必ず{formatted_dates}の形式で表記してください。
         各メニュー項目に対して、具体的な食材と1人分の量を詳細に記載してください。
+        
+        【特に重要：必ず守ってください】
+        - 添付したサンプルと同じ正確なJSON形式で出力してください
+        - meals部分は必ず配列（"朝食": ["メニュー1", "メニュー2", ...] ）の形式で記述してください
+        - ingredients部分は二重の辞書構造になるようにしてください
+        - 正しくない例: "昼食": {"ご飯": "チキンカツ", "ポテトサラダ", "キャベツの浅漬け"}
+        - 正しい例: "昼食": ["ご飯", "チキンカツ", "ポテトサラダ", "キャベツの浅漬け"]
+        
+        最終的な形式はコードブロックで囲ってください: ```json ... ```
+        出力の最初と最後に説明文を入れないでください。JSON以外の文字は含めないでください。
         """
         
         # 完全なプロンプトの組み立て
@@ -2211,8 +2304,19 @@ def generate_weekly_menu(days, params):
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
             if json_match:
                 json_str = json_match.group(1)
+                print("JSONブロックを抽出しました")
             else:
-                json_str = response_text
+                # コードブロックがない場合は、可能な限りJSONと思われる部分を抽出
+                print("JSONブロックが見つかりません。全テキストから抽出を試みます。")
+                # 波括弧の最初と最後を探す
+                first_brace = response_text.find('{')
+                last_brace = response_text.rfind('}')
+                if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+                    json_str = response_text[first_brace:last_brace+1]
+                    print(f"JSON部分を抽出しました: {first_brace}〜{last_brace}")
+                else:
+                    json_str = response_text
+                    print("JSON構造が見つかりませんでした。全テキストを使用します。")
             
             # JSONを整形する前処理
             # コメントの削除
@@ -2227,10 +2331,19 @@ def generate_weekly_menu(days, params):
             
             # テンプレート文字列を実際の値に置換（{{...}} を解決）
             json_str = re.sub(r'{{([^}]+)}}', r'{\1}', json_str)
+
+            # 不正な形式の配列を修正 ({"key": value, item1, item2} → {"key": value, "items": [item1, item2]})
+            json_str = re.sub(r'({[^{}]*)"([^"]+)"(\s*:\s*{[^{}]*}),\s*"([^"]+)",\s*"([^"]+)"([^{}]*})', 
+                            r'\1"\2"\3, "\4": "", "\5": ""\6', json_str)
             
+            # JSONの修復：不正な形式のmealオブジェクトを修正 {"meals": {"朝食": {"メニュー1", "メニュー2"}}} → {"meals": {"朝食": ["メニュー1", "メニュー2"]}}
+            json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]+)}', lambda m: f'"{m.group(1)}": [{m.group(2).replace("\"", "").replace(",", "\",\"")}]', json_str)
+            
+            # 標準のJSONパーサーでパース
             try:
-                # 標準のJSONパーサーでパース
+                print("JSONパースを試みます...")
                 result = json.loads(json_str)
+                print("JSONパース成功")
             except json.JSONDecodeError as je:
                 # エラー位置の周辺テキストを表示
                 print(f"JSON解析エラー: {str(je)}")
@@ -2241,67 +2354,23 @@ def generate_weekly_menu(days, params):
                 print(f"エラー周辺: ...{error_context}...")
                 print(f"エラー位置: {'^'.rjust(min(40, error_pos - context_start) + 3)}")
                 
-                # バックアッププランとして、より簡易的な構造を作成
-                # 各日に基本的なデータ構造を提供
-                result = {}
-                for date_info in date_infos:
-                    date_key = date_info['date']
-                    result[date_key] = {
-                        "meals": {
-                            "朝食": ["米飯", "主菜", "副菜", "汁物", "デザート"],
-                            "昼食": ["パン", "主菜", "副菜", "汁物", "デザート"],
-                            "夕食": ["米飯", "主菜", "副菜", "汁物", "デザート"]
-                        },
-                        "ingredients": {
-                            "朝食": {
-                                "米飯": {"米": "80g"},
-                                "主菜": {"材料": "適量"},
-                                "副菜": {"材料": "適量"},
-                                "汁物": {"材料": "適量"},
-                                "デザート": {"材料": "適量"}
-                            },
-                            "昼食": {
-                                "パン": {"小麦粉": "適量"},
-                                "主菜": {"材料": "適量"},
-                                "副菜": {"材料": "適量"},
-                                "汁物": {"材料": "適量"},
-                                "デザート": {"材料": "適量"}
-                            },
-                            "夕食": {
-                                "米飯": {"米": "80g"},
-                                "主菜": {"材料": "適量"},
-                                "副菜": {"材料": "適量"},
-                                "汁物": {"材料": "適量"},
-                                "デザート": {"材料": "適量"}
-                            }
-                        },
-                        "nutrition": {
-                            "カロリー": "約1800kcal",
-                            "タンパク質": "約75g",
-                            "脂質": "約50g",
-                            "炭水化物": "約240g",
-                            "塩分": "約7.5g"
-                        }
-                    }
-                
-                # LLMの応答から可能な限り情報を抽出
-                # 日付ごとのセクションを抽出
-                date_sections = re.findall(r'"([0-9]{4}-[0-9]{2}-[0-9]{2})".*?(?="[0-9]{4}-[0-9]{2}-[0-9]{2}"|$)', 
-                                           json_str, re.DOTALL)
-                
-                for section in date_sections:
-                    date_match = re.search(r'([0-9]{4}-[0-9]{2}-[0-9]{2})', section)
-                    if date_match:
-                        date_key = date_match.group(1)
-                        
-                        # 各料理を抽出する試み
-                        meal_types = ["朝食", "昼食", "夕食"]
-                        for meal_type in meal_types:
-                            meal_match = re.search(f'"{meal_type}"\\s*:\\s*\\[(.*?)\\]', section, re.DOTALL)
-                            if meal_match and date_key in result:
-                                meal_items = re.findall(r'"([^"]+)"', meal_match.group(1))
-                                if meal_items:
-                                    result[date_key]["meals"][meal_type] = meal_items
+                # JSON修復を試みる
+                try:
+                    # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
+                    corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
+                                        r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                    
+                    # もう一度パースを試みる
+                    try:
+                        result = json.loads(corrected_json)
+                        print("JSON修復に成功しました")
+                    except:
+                        # 修復に失敗した場合はフォールバック
+                        raise
+                except:
+                    # バックアッププランとして、より簡易的な構造を作成
+                    print("完全なフォールバックメニューを生成します")
+                    result = create_fallback_menu(date_infos)
             
             # 日付形式が正しいか確認し、必要に応じて修正
             corrected_result = {}
