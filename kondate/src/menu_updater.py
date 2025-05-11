@@ -1844,6 +1844,16 @@ def reorder_with_llm(all_meals, all_nutrition, strategy, target_weekday=None, ta
             # JSONの修復：不正な形式のmealオブジェクトを修正 {"meals": {"朝食": {"メニュー1", "メニュー2"}}} → {"meals": {"朝食": ["メニュー1", "メニュー2"]}}
             json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]+)}', lambda m: f'"{m.group(1)}": [{m.group(2).replace("\"", "").replace(",", "\",\"")}]', json_str)
             
+            # 追加の修復パターン: 値リストがない配列形式
+            json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]*)}', r'"\1": ["\2"]', json_str)
+            
+            # ヌル文字の除去
+            json_str = json_str.replace('\x00', '')
+            
+            # 追加のデバッグ情報
+            print("JSON処理後の一部:")
+            print(json_str[:500] + "..." if len(json_str) > 500 else json_str)
+            
             # 標準のJSONパーサーでパース
             try:
                 print("JSONパースを試みます...")
@@ -1859,23 +1869,53 @@ def reorder_with_llm(all_meals, all_nutrition, strategy, target_weekday=None, ta
                 print(f"エラー周辺: ...{error_context}...")
                 print(f"エラー位置: {'^'.rjust(min(40, error_pos - context_start) + 3)}")
                 
-                # JSON修復を試みる
+                # 最終手段として日付ごとに分割処理
                 try:
-                    # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
-                    corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
-                                        r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                    print("日付ごとの部分パース処理を試みます")
+                    # 結果を格納する辞書
+                    result = {}
                     
-                    # もう一度パースを試みる
+                    # 日付ごとのJSONブロックを抽出
+                    date_pattern = r'"(\d{4}-\d{2}-\d{2})"\s*:\s*\{([^{]*?(?:\{[^{]*?\}[^{]*?)*?)\}'
+                    date_matches = re.finditer(date_pattern, json_str)
+                    
+                    for match in date_matches:
+                        date_key = match.group(1)
+                        date_content = '{' + match.group(2) + '}'
+                        
+                        try:
+                            # 各日付ブロックを個別にパース
+                            date_obj = json.loads(date_content)
+                            result[date_key] = date_obj
+                            print(f"日付 {date_key} のパース成功")
+                        except json.JSONDecodeError:
+                            print(f"日付 {date_key} のパースに失敗")
+                            # ここでもフォールバック
+                            pass
+                    
+                    # 日付が一つも抽出できなかった場合
+                    if not result:
+                        raise ValueError("日付ごとのパースにも失敗しました")
+                
+                except Exception as parse_err:
+                    print(f"分割パース中のエラー: {str(parse_err)}")
+                    # JSON修復を試みる
                     try:
-                        result = json.loads(corrected_json)
-                        print("JSON修復に成功しました")
+                        # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
+                        corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
+                                            r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                        
+                        # もう一度パースを試みる
+                        try:
+                            result = json.loads(corrected_json)
+                            print("JSON修復に成功しました")
+                        except:
+                            # 修復に失敗した場合はフォールバック
+                            raise
                     except:
-                        # 修復に失敗した場合はフォールバック
-                        raise
-                except:
-                    # バックアッププランとして、より簡易的な構造を作成
-                    print("完全なフォールバックメニューを生成します")
-                    result = create_fallback_menu(date_infos)
+                        # バックアッププランとして、より簡易的な構造を作成
+                        print("完全なフォールバックメニューを生成します")
+                        result = create_fallback_menu(date_infos)
             
             # 日付形式が正しいか確認し、必要に応じて修正
             corrected_result = {}
@@ -2339,6 +2379,16 @@ def generate_weekly_menu(days, params):
             # JSONの修復：不正な形式のmealオブジェクトを修正 {"meals": {"朝食": {"メニュー1", "メニュー2"}}} → {"meals": {"朝食": ["メニュー1", "メニュー2"]}}
             json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]+)}', lambda m: f'"{m.group(1)}": [{m.group(2).replace("\"", "").replace(",", "\",\"")}]', json_str)
             
+            # 追加の修復パターン: 値リストがない配列形式
+            json_str = re.sub(r'"(朝食|昼食|夕食)"\s*:\s*{([^{}]*)}', r'"\1": ["\2"]', json_str)
+            
+            # ヌル文字の除去
+            json_str = json_str.replace('\x00', '')
+            
+            # 追加のデバッグ情報
+            print("JSON処理後の一部:")
+            print(json_str[:500] + "..." if len(json_str) > 500 else json_str)
+            
             # 標準のJSONパーサーでパース
             try:
                 print("JSONパースを試みます...")
@@ -2354,23 +2404,53 @@ def generate_weekly_menu(days, params):
                 print(f"エラー周辺: ...{error_context}...")
                 print(f"エラー位置: {'^'.rjust(min(40, error_pos - context_start) + 3)}")
                 
-                # JSON修復を試みる
+                # 最終手段として日付ごとに分割処理
                 try:
-                    # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
-                    corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
-                                        r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                    print("日付ごとの部分パース処理を試みます")
+                    # 結果を格納する辞書
+                    result = {}
                     
-                    # もう一度パースを試みる
+                    # 日付ごとのJSONブロックを抽出
+                    date_pattern = r'"(\d{4}-\d{2}-\d{2})"\s*:\s*\{([^{]*?(?:\{[^{]*?\}[^{]*?)*?)\}'
+                    date_matches = re.finditer(date_pattern, json_str)
+                    
+                    for match in date_matches:
+                        date_key = match.group(1)
+                        date_content = '{' + match.group(2) + '}'
+                        
+                        try:
+                            # 各日付ブロックを個別にパース
+                            date_obj = json.loads(date_content)
+                            result[date_key] = date_obj
+                            print(f"日付 {date_key} のパース成功")
+                        except json.JSONDecodeError:
+                            print(f"日付 {date_key} のパースに失敗")
+                            # ここでもフォールバック
+                            pass
+                    
+                    # 日付が一つも抽出できなかった場合
+                    if not result:
+                        raise ValueError("日付ごとのパースにも失敗しました")
+                
+                except Exception as parse_err:
+                    print(f"分割パース中のエラー: {str(parse_err)}")
+                    # JSON修復を試みる
                     try:
-                        result = json.loads(corrected_json)
-                        print("JSON修復に成功しました")
+                        # 辞書内の配列表記の修正 ({"key": "value", "elem1", "elem2"} → {"key": "value", "items": ["elem1", "elem2"]})
+                        corrected_json = re.sub(r'("[^"]+"):\s*{("[^"]+")\s*:\s*("[^"]+")\s*,\s*("[^"]+")\s*,\s*("[^"]+")}', 
+                                            r'\1: {\2: \3, "items": [\4, \5]}', json_str)
+                        
+                        # もう一度パースを試みる
+                        try:
+                            result = json.loads(corrected_json)
+                            print("JSON修復に成功しました")
+                        except:
+                            # 修復に失敗した場合はフォールバック
+                            raise
                     except:
-                        # 修復に失敗した場合はフォールバック
-                        raise
-                except:
-                    # バックアッププランとして、より簡易的な構造を作成
-                    print("完全なフォールバックメニューを生成します")
-                    result = create_fallback_menu(date_infos)
+                        # バックアッププランとして、より簡易的な構造を作成
+                        print("完全なフォールバックメニューを生成します")
+                        result = create_fallback_menu(date_infos)
             
             # 日付形式が正しいか確認し、必要に応じて修正
             corrected_result = {}
