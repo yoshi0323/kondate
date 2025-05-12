@@ -1,52 +1,36 @@
 import os
+import sys
+import streamlit as st
+from datetime import datetime, date, timedelta
 import tempfile
 import base64
 from pathlib import Path
 import pandas as pd
-import streamlit as st
-import datetime
-from datetime import date, timedelta
 import io
 
-import sys
+# 現在のディレクトリとsrcディレクトリをパスに追加
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from menu_updater import (
-    update_menu_with_desserts,
-    generate_menu_image_output,
-    create_order_sheets,
-    update_menu_with_reordering,
-    get_nutritionist_response,
-    preview_reordering,
-    reorder_with_llm,
-    generate_weekly_menu
-)
+# APIキーを環境変数に設定
+os.environ["GOOGLE_API_KEY"] = "AIzaSyBN4UbkChLqKMVDNKIvJP8m-aQkqM3rPEg"
 
-# プロジェクトのルートディレクトリを取得
-ROOT_DIR = Path(__file__).parent.parent
-DATA_DIR = ROOT_DIR / "data"
-
-# ページ設定 - アドブロッカー対応のオプションを追加
+# アプリのタイトルを設定
 st.set_page_config(
     page_title="給食AI自動生成システム",
     page_icon="🍰",
-    layout="wide",
-    menu_items={
-        'Get Help': None,
-        'Report a bug': None,
-        'About': """
-        © 2025 給食AI自動生成システム - 献立作成支援ツール
-        """
-    }
+    layout="wide"
 )
 
-# カスタムCSS - アドブロッカーの警告を非表示にする
+# アプリケーションの正しいパスを追加
+sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
+
+# カスタムCSS
 st.markdown("""
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 .stDeployButton {display:none;}
-.css-eh5xgm.e1ewe7hr3, .viewerBadge_container__1QSob {display: none;}
 .block-container {padding-top: 2rem;}
 </style>
 """, unsafe_allow_html=True)
@@ -62,6 +46,23 @@ st.write("""
 3. 「献立並び替え」ボタン：選択した戦略に基づいて献立を並び替えます
 4. 処理が完了すると、更新されたファイルが自動で開かれます
 """)
+
+# メインアプリケーションをインポート
+try:
+    from src.menu_updater import (
+        update_menu_with_desserts,
+        generate_menu_image_output,
+        create_order_sheets,
+        update_menu_with_reordering,
+        get_nutritionist_response,
+        preview_reordering,
+        reorder_with_llm,
+        generate_weekly_menu
+    )
+    is_api_available = True
+except Exception as e:
+    is_api_available = False
+    st.warning(f"API設定が必要です。 .envファイルにAPIキーを設定してください。エラー: {str(e)}")
 
 # タブを作成して機能を分ける
 tab1, tab2, tab3 = st.tabs(["既存献立の管理", "一週間献立の自動生成", "発注書作成"])
@@ -83,7 +84,7 @@ with tab1:
             )
             
             if st.button("メニュー出力", key="normal_output"):
-                with st.spinner("デザート追加と栄養計算を実行中..."):
+                if is_api_available:
                     try:
                         # 一時ファイルとして保存
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
@@ -92,7 +93,8 @@ with tab1:
 
                         if output_option == "Excel出力":
                             # 通常の処理を実行
-                            output_file = update_menu_with_desserts(input_path)
+                            with st.spinner("デザート追加と栄養計算を実行中..."):
+                                output_file = update_menu_with_desserts(input_path)
                             
                             if output_file:
                                 with open(output_file, "rb") as file:
@@ -107,42 +109,34 @@ with tab1:
                                 )
                             else:
                                 st.error("メニュー表の更新に失敗しました。")
-                                st.info("もう一度お試しいただくか、ファイルの形式を確認してください。")
-                                retry_col1, retry_col2 = st.columns([1,3])
-                                with retry_col1:
-                                    if st.button("再試行", key="retry_update"):
-                                        st.experimental_rerun()
-                                with retry_col2:
-                                    st.write("ファイルのフォーマットが正しいことを確認してください。入力ファイルは最新の形式である必要があります。")
-                        
                         else:  # 画像出力
                             # 画像出力処理を実行
-                            output_file = generate_menu_image_output(input_path)
+                            with st.spinner("画像出力を作成中..."):
+                                output_files = generate_menu_image_output(input_path)
                             
-                            if output_file:
-                                with open(output_file, "rb") as file:
-                                    output_data = file.read()
-                                
-                                st.success("メニュー表の画像を作成しました！")
-                                
-                                # 画像を表示
-                                st.image(output_data, caption="メニュー表")
-                                
-                                # ダウンロードボタン
-                                st.download_button(
-                                    label="メニュー表の画像をダウンロード",
-                                    data=output_data,
-                                    file_name=os.path.basename(output_file),
-                                    mime="image/png"
-                                )
+                            if output_files:
+                                for img_file in output_files:
+                                    with open(img_file, "rb") as file:
+                                        output_data = file.read()
+                                    
+                                    st.success("メニュー表の画像を作成しました！")
+                                    st.image(output_data, caption="メニュー表")
+                                    st.download_button(
+                                        label=f"{os.path.basename(img_file)}をダウンロード",
+                                        data=output_data,
+                                        file_name=os.path.basename(img_file),
+                                        mime="image/png",
+                                        key=os.path.basename(img_file)
+                                    )
                             else:
                                 st.error("メニュー表の画像作成に失敗しました。")
                         
                         # 一時ファイルを削除
                         os.unlink(input_path)
-                    
                     except Exception as e:
                         st.error(f"エラーが発生しました: {str(e)}")
+                else:
+                    st.error("APIキーが必要です。.envファイルを設定してください。")
         
         with col2:
             # 並び替え基本戦略のプルダウン
@@ -176,81 +170,73 @@ with tab1:
                 selected_genre = None
             
             if st.button("並び替えプレビュー"):
-                if not uploaded_file:
-                    st.error("ファイルをアップロードしてください。")
-                else:
-                    try:
-                        # 一時ファイルとして保存
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
-                            tmp_input.write(uploaded_file.getvalue())
-                            input_path = tmp_input.name
+                if is_api_available:
+                    if not uploaded_file:
+                        st.error("ファイルをアップロードしてください。")
+                    else:
+                        try:
+                            # 一時ファイルとして保存
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
+                                tmp_input.write(uploaded_file.getvalue())
+                                input_path = tmp_input.name
 
-                        # プレビュー生成パラメータ
-                        params = {
-                            "reorder_type": reorder_selection
-                        }
-                        
-                        if reorder_selection == "曜日指定並び替え":
-                            params["target_weekday"] = selected_weekday
-                            params["target_genre"] = selected_genre
-                        
-                        # プレビュー生成
-                        preview_df, menu_details, reorder_rationale = preview_reordering(input_path, **params)
-                        
-                        # セッションステートに保存
-                        st.session_state.preview_df = preview_df
-                        st.session_state.menu_details = menu_details
-                        st.session_state.reorder_rationale = reorder_rationale
-                        st.session_state.reorder_params = params
-                        st.session_state.input_path = input_path
-                        
-                        # プレビュー表示
-                        st.subheader("並び替え後のメニュー表")
-                        st.dataframe(preview_df, use_container_width=True)
-                        
-                        # 並び替え理由の表示
-                        st.write("#### AIによる並び替え判断の説明")
-                        st.info(reorder_rationale)
-                        
-                        # メッセージとボタンを横に配置
-                        col_message, col_button = st.columns([2, 1])
-                        
-                        with col_message:
-                            st.success("並び替えプレビューを生成しました。確定して保存する場合は右のボタンをクリックしてください。")
-                        
-                        with col_button:
-                            if st.button("確定して保存", key="confirm_reorder"):
-                                with st.spinner("ファイルを保存しています..."):
-                                    # 出力用の一時ファイル名を生成
-                                    output_path = str(Path(input_path).with_name('reordered_menu.xlsx'))
-                                    
-                                    # 並び替え更新処理を実行
-                                    update_menu_with_reordering(
-                                        input_path, 
-                                        output_path, 
-                                        reorder_selection,
-                                        selected_weekday,
-                                        selected_genre
-                                    )
-                                    
-                                    # 完了メッセージ
-                                    st.success("並び替えが完了しました！ファイルが自動で開かれます。")
-                        
-                        # メニュー詳細表示
-                        with st.expander("メニューの詳細を表示"):
-                            st.write("#### 日付ごとのメニュー内容")
+                            # プレビュー生成パラメータ
+                            params = {
+                                "reorder_type": reorder_selection
+                            }
                             
-                            # 日付ごとに折りたたみ可能なセクションで表示
-                            for date, meals in menu_details.items():
-                                with st.expander(f"{date}"):
-                                    for meal_type, dishes in meals.items():
-                                        st.write(f"**{meal_type}**")
-                                        for dish in dishes:
-                                            st.write(f"- {dish}")
-                    except Exception as e:
-                        st.error(f"プレビュー生成中にエラーが発生しました: {str(e)}")
-                        if 'input_path' in vars() and os.path.exists(input_path):
-                            os.unlink(input_path)
+                            if reorder_selection == "曜日指定並び替え":
+                                params["target_weekday"] = selected_weekday
+                                params["target_genre"] = selected_genre
+                            
+                            # プレビュー生成
+                            with st.spinner("プレビューを生成中..."):
+                                preview_df, menu_details, reorder_rationale = preview_reordering(input_path, **params)
+                            
+                            # セッションステートに保存
+                            st.session_state.preview_df = preview_df
+                            st.session_state.menu_details = menu_details
+                            st.session_state.reorder_rationale = reorder_rationale
+                            st.session_state.reorder_params = params
+                            st.session_state.input_path = input_path
+                            
+                            # プレビュー表示
+                            st.subheader("並び替え後のメニュー表")
+                            st.dataframe(preview_df, use_container_width=True)
+                            
+                            # 並び替え理由の表示
+                            st.write("#### AIによる並び替え判断の説明")
+                            st.info(reorder_rationale)
+                            
+                            # メッセージとボタンを横に配置
+                            col_message, col_button = st.columns([2, 1])
+                            
+                            with col_message:
+                                st.success("並び替えプレビューを生成しました。確定して保存する場合は右のボタンをクリックしてください。")
+                            
+                            with col_button:
+                                if st.button("確定して保存", key="confirm_reorder"):
+                                    with st.spinner("ファイルを保存しています..."):
+                                        # 出力用の一時ファイル名を生成
+                                        output_path = str(Path(input_path).with_name('reordered_menu.xlsx'))
+                                        
+                                        # 並び替え更新処理を実行
+                                        update_menu_with_reordering(
+                                            input_path, 
+                                            output_path, 
+                                            reorder_selection,
+                                            selected_weekday,
+                                            selected_genre
+                                        )
+                                        
+                                        # 完了メッセージ
+                                        st.success("並び替えが完了しました！ファイルが自動で開かれます。")
+                        except Exception as e:
+                            st.error(f"プレビュー生成中にエラーが発生しました: {str(e)}")
+                            if 'input_path' in vars() and os.path.exists(input_path):
+                                os.unlink(input_path)
+                else:
+                    st.error("APIキーが必要です。.envファイルを設定してください。")
 
 with tab2:
     st.header("🍽️ 一週間の献立自動生成")
@@ -484,24 +470,12 @@ with tab2:
                     # エクスポートオプション
                     st.write(f"### 献立のエクスポート ({selected_weeks}週間分)")
                     
-                    try:
-                        # メンテナンスのためのデバッグ出力
-                        print("ピボットテーブル処理を開始します")
-                        print(f"元データのカラム: {final_excel_df.columns.tolist()}")
-                        
-                        # ピボットテーブル処理 - データ変換
+                    # Excelファイルの作成
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        # 列と行を入れ替えて「既存献立の管理」と同じフォーマットにする
                         # 「項目」列を作成し、「日付」「食事区分」「メニュー区分」「料理名」を項目として使用
                         pivoted_df = final_excel_df.copy()
-                        
-                        # データの整合性チェック
-                        required_columns = ['日付', '食事区分', 'メニュー区分', '料理名']
-                        missing_columns = [col for col in required_columns if col not in pivoted_df.columns]
-                        if missing_columns:
-                            raise ValueError(f"必要なカラムがありません: {missing_columns}")
-                            
-                        # 文字列データの確認と変換
-                        for col in required_columns:
-                            pivoted_df[col] = pivoted_df[col].astype(str)
                         
                         # 一度UniqueなIDを作成して、同じ日付の異なるメニューを区別する
                         pivoted_df['unique_id'] = pivoted_df['日付'] + '_' + pivoted_df['食事区分'] + '_' + pivoted_df['メニュー区分'] + '_' + pivoted_df['料理名']
@@ -512,196 +486,75 @@ with tab2:
                         # 食事区分を項目に追加（朝食/昼食/夕食を明確にする）
                         pivoted_df['項目'] = pivoted_df['食事区分'] + '：' + pivoted_df['項目']
                         
-                        print("ピボット処理準備完了")
-                        print(f"項目列サンプル: {pivoted_df['項目'].head().tolist()}")
-                        
                         # ピボットテーブルを作成（項目を行、日付を列に変換）
-                        try:
-                            # 値がない場合の処理
-                            if '1人分量' not in pivoted_df.columns:
-                                pivoted_df['1人分量'] = "情報なし"
-                                
-                            pivot_table = pd.pivot_table(
-                                pivoted_df, 
-                                values='1人分量',  # 1人分量を値として使用
-                                index=['項目'],     # 項目を行インデックスに
-                                columns=['日付'],   # 日付を列に
-                                aggfunc='first'    # 同じ項目×日付の組み合わせは最初の値を使用
-                            )
-                            print("ピボットテーブル作成完了")
-                            
-                            # NaN値を空文字に置換
-                            pivot_table = pivot_table.fillna('')
-                            
-                            # 項目を明示的に列として扱う（existing code と同じ形式に）
-                            reset_df = pivot_table.reset_index()
-                            reset_df = reset_df.rename(columns={'index': '項目'})
-                            
-                            # 最終的なデータフレームを「項目」列をインデックスとして設定
-                            final_formatted_df = reset_df.set_index('項目')
-                            
-                            print("ピボットテーブル処理完了")
-                        except Exception as pivot_err:
-                            st.error(f"データのピボット処理中にエラーが発生しました: {str(pivot_err)}")
-                            print(f"ピボット処理エラー詳細: {pivot_err}")
-                            # シンプルな代替表示を使用
-                            st.write("正規形式での表示に切り替えます")
-                            
-                            # シンプルな形式の表に変換 (ピボットテーブルを使わない)
-                            final_formatted_df = pivoted_df[['項目', '日付', '1人分量']].set_index('項目')
-                    except Exception as data_err:
-                        st.error(f"データ形式の変換中にエラーが発生しました: {str(data_err)}")
-                        print(f"データ変換エラー詳細: {data_err}")
-                        # 最もシンプルな形式で表示
-                        st.dataframe(final_excel_df)
-                        # 元のデータを使用
-                        final_formatted_df = final_excel_df
-                    
-                    # Excelファイルの作成
-                    output = io.BytesIO()
-                    try:
-                        # デバッグメッセージ
-                        print("Excel出力処理を開始します")
-                        
-                        # 出力するデータの確認
-                        print(f"データ形式: {type(final_formatted_df)}")
-                        print(f"列数: {len(final_formatted_df.columns)}")
-                        print(f"行数: {len(final_formatted_df)}")
-                        
-                        # まずxlsxwriterでの出力を試みる（書式設定が容易）
-                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                            print("xlsxwriterエンジンで出力を試みます")
-                            # 既存献立の管理と同じ形式で出力
-                            final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True)
-                            
-                            # 書式設定
-                            workbook = writer.book
-                            worksheet = writer.sheets['Sheet1']
-                            
-                            # セル書式
-                            print("セル書式の設定を行います")
-                            cell_format = workbook.add_format({
-                                'font_size': 8,
-                                'font_name': 'MS Gothic',
-                                'text_wrap': True,
-                                'align': 'left',
-                                'valign': 'top'
-                            })
-                            
-                            # 列幅調整と書式適用
-                            print("列幅の調整を行います")
-                            for col_num, col in enumerate(final_formatted_df.reset_index().columns):
-                                # 列幅を計算（文字数に基づく）
-                                max_width = len(str(col)) * 1.2  # ヘッダー幅
-                                
-                                if col_num == 0:  # インデックス列（項目）
-                                    for cell in final_formatted_df.index.astype(str):
-                                        width = len(cell) * 1.1
-                                        max_width = max(max_width, width)
-                                else:  # データ列
-                                    try:
-                                        col_name = final_formatted_df.columns[col_num-1]
-                                        for cell in final_formatted_df[col_name].astype(str):
-                                            lines = cell.split('\n')
-                                            for line in lines:
-                                                width = len(line) * 1.1
-                                                max_width = max(max_width, width)
-                                    except Exception as e:
-                                        print(f"列処理中にエラー発生: {e}")
-                                
-                                # 幅を制限（10～50の範囲）
-                                column_width = max(10, min(max_width, 50))
-                                worksheet.set_column(col_num, col_num, column_width)
-                            
-                            # 全セルに書式を適用
-                            print("セルに書式を適用します")
-                            for row in range(len(final_formatted_df) + 1):
-                                worksheet.set_row(row, None, cell_format)
-                            
-                            print("xlsxwriterでの出力完了")
-                    
-                    except Exception as e:
-                        # xlsxwriterが利用できない場合はopenpyxlにフォールバック
-                        print(f"xlsxwriterでの書き出しに失敗しました: {str(e)}")
-                        print("openpyxlエンジンを使用します")
-                        
-                        # 新しいメモリストリームを作成（前のは使い切っている可能性がある）
-                        output = io.BytesIO()
-                        
-                        try:
-                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                # 既存献立の管理と同じ形式で出力
-                                final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True)
-                                
-                                # openpyxlでの書式設定
-                                workbook = writer.book
-                                worksheet = writer.sheets['Sheet1']
-                                
-                                # openpyxlでの列幅調整
-                                for col_num, col in enumerate(final_formatted_df.reset_index().columns):
-                                    # 列幅を計算（文字数に基づく）
-                                    max_width = len(str(col)) * 1.2  # ヘッダー幅
-                                    
-                                    if col_num == 0:  # インデックス列（項目）
-                                        for cell in final_formatted_df.index.astype(str):
-                                            width = len(cell) * 1.1
-                                            max_width = max(max_width, width)
-                                    else:  # データ列
-                                        try:
-                                            col_name = final_formatted_df.columns[col_num-1]
-                                            for cell in final_formatted_df[col_name].astype(str):
-                                                lines = cell.split('\n')
-                                                for line in lines:
-                                                    width = len(line) * 1.1
-                                                    max_width = max(max_width, width)
-                                        except Exception as e:
-                                            print(f"列処理中にエラー発生: {e}")
-                                    
-                                    # 幅を制限（10～50の範囲）
-                                    column_width = max(10, min(max_width, 50))
-                                    
-                                    # openpyxlでの列幅設定（インデックスが0から始まる）
-                                    col_letter = worksheet.cell(row=1, column=col_num+1).column_letter
-                                    worksheet.column_dimensions[col_letter].width = column_width
-                                
-                                try:
-                                    # openpyxlでのフォント設定 (全セルに適用)
-                                    from openpyxl.styles import Font, Alignment
-                                    font = Font(name='MS Gothic', size=8)
-                                    alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-                                    
-                                    # ヘッダー行を含めた全行、全列のループ
-                                    for row in worksheet.iter_rows():
-                                        for cell in row:
-                                            cell.font = font
-                                            cell.alignment = alignment
-                                except Exception as style_err:
-                                    print(f"セルスタイル適用中にエラーが発生しました: {str(style_err)}")
-                                    # スタイル適用に失敗しても処理を続行
-                                
-                                print("openpyxlでの出力完了")
-                        except Exception as openpyxl_err:
-                            print(f"openpyxlでの書き出しにも失敗しました: {str(openpyxl_err)}")
-                            # 最後の手段として、スタイルなしで出力を試みる
-                            output = io.BytesIO()
-                            final_formatted_df.to_excel(output, index=True)
-                            print("スタイルなしでの出力完了")
-                    
-                    # 最終的なダウンロードボタン（いずれの方法でも成功した場合）
-                    try:
-                        download_button = st.download_button(
-                            label=f"{selected_weeks}週間分の献立をExcelでダウンロード",
-                            data=output.getvalue(),
-                            file_name=f"menu_{selected_weeks}w_{start_date.strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        pivot_table = pd.pivot_table(
+                            pivoted_df, 
+                            values='1人分量',  # 1人分量を値として使用
+                            index=['項目'],     # 項目を行インデックスに
+                            columns=['日付'],   # 日付を列に
+                            aggfunc='first'    # 同じ項目×日付の組み合わせは最初の値を使用
                         )
                         
-                        if download_button:
-                            st.balloons()
-                    except Exception as download_err:
-                        st.error(f"ダウンロードボタンの作成に失敗しました: {str(download_err)}")
-                        # 代替のダウンロード方法を提供
-                        st.write("ダウンロードボタンの生成に失敗しました。別の方法でダウンロードしてください。")
+                        # NaN値を空文字に置換
+                        pivot_table = pivot_table.fillna('')
+                        
+                        # 項目を明示的に列として扱う（existing code と同じ形式に）
+                        reset_df = pivot_table.reset_index()
+                        reset_df = reset_df.rename(columns={'index': '項目'})
+                        
+                        # 最終的なデータフレームを「項目」列をインデックスとして設定
+                        final_formatted_df = reset_df.set_index('項目')
+                        
+                        # 既存献立の管理と同じ形式で出力
+                        final_formatted_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
+                        
+                        # 書式設定
+                        workbook = writer.book
+                        worksheet = writer.sheets['Sheet1']
+                        
+                        # セル書式
+                        cell_format = workbook.add_format({
+                            'font_size': 8,
+                            'font_name': 'MS Gothic',
+                            'text_wrap': True,
+                            'align': 'left',
+                            'valign': 'top'
+                        })
+                        
+                        # 列幅調整と書式適用
+                        # インデックス列（A列）を含めた列数でループ
+                        for col_num, col in enumerate(final_formatted_df.reset_index().columns):
+                            # 列幅を計算（文字数に基づく）
+                            max_width = len(str(col)) * 1.2  # ヘッダー幅
+                            
+                            if col_num == 0:  # インデックス列（項目）
+                                for cell in final_formatted_df.index.astype(str):
+                                    width = len(cell) * 1.1
+                                    max_width = max(max_width, width)
+                            else:  # データ列
+                                col_name = final_formatted_df.columns[col_num-1]
+                                for cell in final_formatted_df[col_name].astype(str):
+                                    lines = cell.split('\n')
+                                    for line in lines:
+                                        width = len(line) * 1.1
+                                        max_width = max(max_width, width)
+                            
+                            # 幅を制限（10～50の範囲）
+                            column_width = max(10, min(max_width, 50))
+                            worksheet.set_column(col_num, col_num, column_width)
+                        
+                        # 全セルに書式を適用
+                        for row in range(len(final_formatted_df) + 1):
+                            worksheet.set_row(row, None, cell_format)
+                    
+                    # ダウンロードボタン
+                    if st.download_button(
+                        label=f"{selected_weeks}週間分の献立をExcelでダウンロード",
+                        data=output.getvalue(),
+                        file_name=f"menu_{selected_weeks}w_{start_date.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ):
+                        st.balloons()
 
             except Exception as e:
                 st.error(f"献立生成中にエラーが発生しました: {str(e)}")
@@ -905,7 +758,7 @@ with tab3:
                             os.unlink(input_path)
                             
                             # ダウンロードボタンを表示
-                            now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            now = datetime.now().strftime("%Y%m%d_%H%M%S")
                             st.download_button(
                                 label="発注書をダウンロード",
                                 data=output_data,
