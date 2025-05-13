@@ -7,6 +7,7 @@ import base64
 from pathlib import Path
 import pandas as pd
 import io
+import re
 
 # 現在のディレクトリとsrcディレクトリをパスに追加
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -117,6 +118,70 @@ with tab1:
                                 )
                             else:
                                 st.error("メニュー表の更新に失敗しました。")
+                                st.info("もう一度お試しいただくか、ファイルの形式を確認してください。")
+                                retry_col1, retry_col2 = st.columns([1,3])
+                                with retry_col1:
+                                    if st.button("再試行", key="retry_update"):
+                                        st.rerun()
+                                with retry_col2:
+                                    st.write("ファイルのフォーマットが正しいことを確認してください。入力ファイルは最新の形式である必要があります。")
+                                
+                                # 詳細なデバッグ情報を表示（開発者向け）
+                                with st.expander("詳細なエラー情報（開発者向け）"):
+                                    try:
+                                        # 一時ファイルとして保存
+                                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
+                                            tmp_input.write(uploaded_file.getvalue())
+                                            temp_input_path = tmp_input.name
+                                        
+                                        # テストとしてExcelファイルを読み込んでみる
+                                        df_dict = pd.read_excel(temp_input_path, sheet_name=None)
+                                        st.write("ファイル読み込み: OK")
+                                        st.write(f"シート数: {len(df_dict)}")
+                                        st.write(f"シート名: {list(df_dict.keys())}")
+                                        
+                                        # シート名の形式チェック
+                                        valid_sheets = []
+                                        invalid_sheets = []
+                                        for sheet_name in df_dict.keys():
+                                            match = re.search(r'(\d+)月(\d+)日', sheet_name)
+                                            if match:
+                                                valid_sheets.append(sheet_name)
+                                            else:
+                                                invalid_sheets.append(sheet_name)
+                                        
+                                        st.write(f"有効なシート名: {valid_sheets}")
+                                        if invalid_sheets:
+                                            st.write(f"無効なシート名: {invalid_sheets}")
+                                            st.warning("シート名は「X月Y日」の形式である必要があります。")
+                                        
+                                        # 最初のシートのデータ構造を確認
+                                        if df_dict:
+                                            first_sheet = list(df_dict.keys())[0]
+                                            df = df_dict[first_sheet]
+                                            st.write(f"最初のシート '{first_sheet}' の列: {list(df.columns)}")
+                                            st.write(f"データサンプル:")
+                                            st.dataframe(df.head(5))
+                                        
+                                        # エラーログファイルの確認
+                                        import glob
+                                        temp_dir = Path(os.getenv('TEMP', '/tmp'))
+                                        error_files = glob.glob(str(temp_dir / 'menu_update_error_*.json'))
+                                        if error_files:
+                                            latest_error_file = max(error_files, key=os.path.getctime)
+                                            st.write(f"最新のエラーログ: {latest_error_file}")
+                                            try:
+                                                import json
+                                                with open(latest_error_file, 'r', encoding='utf-8') as f:
+                                                    error_data = json.load(f)
+                                                    st.json(error_data)
+                                            except Exception as log_err:
+                                                st.error(f"エラーログの読み込みに失敗: {str(log_err)}")
+                                        
+                                        # 一時ファイルを削除
+                                        os.unlink(temp_input_path)
+                                    except Exception as debug_err:
+                                        st.error(f"デバッグ中にエラーが発生: {str(debug_err)}")
                         else:  # 画像出力
                             # 画像出力処理を実行
                             with st.spinner("画像出力を作成中..."):

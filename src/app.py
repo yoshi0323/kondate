@@ -7,6 +7,7 @@ import streamlit as st
 import datetime
 from datetime import date, timedelta
 import io
+import re
 
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -127,6 +128,48 @@ with tab1:
                                         st.rerun()
                                 with retry_col2:
                                     st.write("ファイルのフォーマットが正しいことを確認してください。入力ファイルは最新の形式である必要があります。")
+                                
+                                # 詳細なデバッグ情報を表示（開発者向け）
+                                with st.expander("詳細なエラー情報（開発者向け）"):
+                                    try:
+                                        # 一時ファイルとして保存
+                                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_input:
+                                            tmp_input.write(uploaded_file.getvalue())
+                                            temp_input_path = tmp_input.name
+                                        
+                                        # テストとしてExcelファイルを読み込んでみる
+                                        df_dict = pd.read_excel(temp_input_path, sheet_name=None)
+                                        st.write("ファイル読み込み: OK")
+                                        st.write(f"シート数: {len(df_dict)}")
+                                        st.write(f"シート名: {list(df_dict.keys())}")
+                                        
+                                        # シート名の形式チェック
+                                        valid_sheets = []
+                                        invalid_sheets = []
+                                        for sheet_name in df_dict.keys():
+                                            match = re.search(r'(\d+)月(\d+)日', sheet_name)
+                                            if match:
+                                                valid_sheets.append(sheet_name)
+                                            else:
+                                                invalid_sheets.append(sheet_name)
+                                        
+                                        st.write(f"有効なシート名: {valid_sheets}")
+                                        if invalid_sheets:
+                                            st.write(f"無効なシート名: {invalid_sheets}")
+                                            st.warning("シート名は「X月Y日」の形式である必要があります。")
+                                        
+                                        # 最初のシートのデータ構造を確認
+                                        if df_dict:
+                                            first_sheet = list(df_dict.keys())[0]
+                                            df = df_dict[first_sheet]
+                                            st.write(f"最初のシート '{first_sheet}' の列: {list(df.columns)}")
+                                            st.write(f"データサンプル:")
+                                            st.dataframe(df.head(5))
+                                        
+                                        # 一時ファイルを削除
+                                        os.unlink(temp_input_path)
+                                    except Exception as debug_err:
+                                        st.error(f"デバッグ中にエラーが発生: {str(debug_err)}")
                         
                         else:  # 画像出力
                             # 画像出力処理を実行

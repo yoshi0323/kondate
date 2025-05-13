@@ -1068,6 +1068,8 @@ def add_desserts_to_combined_data(combined_data: dict, all_meals: dict):
 
 def update_menu_with_desserts(input_file: str, output_file: str = None):
     """メニューファイルを読み込み、デザートを追加して保存し自動的に開く"""
+    error_info = {}  # エラー情報を保存する辞書
+    
     try:
         print(f"処理開始: {input_file}")
         
@@ -1075,17 +1077,44 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
         try:
             df_dict = pd.read_excel(input_file, sheet_name=None)
             print(f"Excelファイル読み込み完了: {len(df_dict)}シート")
+            error_info['シート数'] = len(df_dict)
+            error_info['シート名'] = list(df_dict.keys())
         except Exception as excel_err:
             print(f"Excelファイル読み込みエラー: {str(excel_err)}")
+            error_info['excel_error'] = str(excel_err)
+            import traceback
+            error_info['excel_traceback'] = traceback.format_exc()
             raise
+        
+        # シート名の検証
+        valid_sheets = []
+        invalid_sheets = []
+        for sheet_name in df_dict.keys():
+            match = re.search(r'(\d+)月(\d+)日', sheet_name)
+            if match:
+                valid_sheets.append(sheet_name)
+            else:
+                invalid_sheets.append(sheet_name)
+        
+        error_info['有効なシート'] = valid_sheets
+        error_info['無効なシート'] = invalid_sheets
+        
+        if not valid_sheets:
+            error_msg = "有効なシートがありません。シート名は「X月Y日」の形式である必要があります。"
+            print(error_msg)
+            error_info['error_reason'] = error_msg
+            raise ValueError(error_msg)
         
         # シートを処理
         try:
             processed_data = process_all_sheets(df_dict)
             print(f"全シート処理完了: {len(processed_data.keys())}列")
+            error_info['処理列数'] = len(processed_data.keys())
         except Exception as process_err:
             print(f"シート処理エラー: {str(process_err)}")
+            error_info['process_error'] = str(process_err)
             import traceback
+            error_info['process_traceback'] = traceback.format_exc()
             print(traceback.format_exc())
             raise
         
@@ -1102,9 +1131,12 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
             # DataFrameを作成（項目をインデックスに設定）
             result_df = pd.DataFrame(data, index=items)
             print(f"DataFrameの作成完了: {result_df.shape}")
+            error_info['DataFrame形状'] = f"{result_df.shape[0]}行 x {result_df.shape[1]}列"
         except Exception as df_err:
             print(f"DataFrame作成エラー: {str(df_err)}")
+            error_info['dataframe_error'] = str(df_err)
             import traceback
+            error_info['dataframe_traceback'] = traceback.format_exc()
             print(traceback.format_exc())
             raise
         
@@ -1115,50 +1147,58 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
             output_file = temp_dir / f'menu_with_desserts_{timestamp}.xlsx'
         
         # ファイル保存
-        with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
-            # インデックスをA列に、index_labelをFalseに設定して出力
-            result_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
-            
-            # 書式設定
-            workbook = writer.book
-            worksheet = writer.sheets['Sheet1']
-            
-            # セル書式
-            cell_format = workbook.add_format({
-                'font_size': 8,
-                'font_name': 'MS Gothic',
-                'text_wrap': True,
-                'align': 'left',
-                'valign': 'top'
-            })
-            
-            # 列幅調整と書式適用
-            # インデックス列（A列）を含めた列数でループ
-            for col_num, col in enumerate(result_df.reset_index().columns):
-                # 列幅を計算（文字数に基づく）
-                max_width = len(str(col)) * 1.2  # ヘッダー幅
+        try:
+            with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+                # インデックスをA列に、index_labelをFalseに設定して出力
+                result_df.to_excel(writer, sheet_name='Sheet1', index=True, index_label=False)
                 
-                if col_num == 0:  # インデックス列（項目）
-                    for cell in result_df.index.astype(str):
-                        width = len(cell) * 1.1
-                        max_width = max(max_width, width)
-                else:  # データ列
-                    col_name = result_df.columns[col_num-1]
-                    for cell in result_df[col_name].astype(str):
-                        lines = cell.split('\n')
-                        for line in lines:
-                            width = len(line) * 1.1
+                # 書式設定
+                workbook = writer.book
+                worksheet = writer.sheets['Sheet1']
+                
+                # セル書式
+                cell_format = workbook.add_format({
+                    'font_size': 8,
+                    'font_name': 'MS Gothic',
+                    'text_wrap': True,
+                    'align': 'left',
+                    'valign': 'top'
+                })
+                
+                # 列幅調整と書式適用
+                # インデックス列（A列）を含めた列数でループ
+                for col_num, col in enumerate(result_df.reset_index().columns):
+                    # 列幅を計算（文字数に基づく）
+                    max_width = len(str(col)) * 1.2  # ヘッダー幅
+                    
+                    if col_num == 0:  # インデックス列（項目）
+                        for cell in result_df.index.astype(str):
+                            width = len(cell) * 1.1
                             max_width = max(max_width, width)
+                    else:  # データ列
+                        col_name = result_df.columns[col_num-1]
+                        for cell in result_df[col_name].astype(str):
+                            lines = cell.split('\n')
+                            for line in lines:
+                                width = len(line) * 1.1
+                                max_width = max(max_width, width)
+                    
+                    # 幅を制限（10～50の範囲）
+                    column_width = max(10, min(max_width, 50))
+                    worksheet.set_column(col_num, col_num, column_width)
                 
-                # 幅を制限（10～50の範囲）
-                column_width = max(10, min(max_width, 50))
-                worksheet.set_column(col_num, col_num, column_width)
+                # 全セルに書式を適用
+                for row in range(len(result_df) + 1):
+                    worksheet.set_row(row, None, cell_format)
             
-            # 全セルに書式を適用
-            for row in range(len(result_df) + 1):
-                worksheet.set_row(row, None, cell_format)
-        
-        print(f"ファイル保存完了: {output_file}")
+            print(f"ファイル保存完了: {output_file}")
+        except Exception as save_err:
+            print(f"ファイル保存エラー: {str(save_err)}")
+            error_info['save_error'] = str(save_err)
+            import traceback
+            error_info['save_traceback'] = traceback.format_exc()
+            print(traceback.format_exc())
+            raise
         
         # ファイルを自動で開く
         if os.path.exists(output_file):
@@ -1171,8 +1211,24 @@ def update_menu_with_desserts(input_file: str, output_file: str = None):
         
     except Exception as e:
         print(f"メニュー更新エラー: {str(e)}")
+        error_info['final_error'] = str(e)
         import traceback
-        print(f"詳細なエラー情報:\n{traceback.format_exc()}")
+        traceback_str = traceback.format_exc()
+        error_info['final_traceback'] = traceback_str
+        print(f"詳細なエラー情報:\n{traceback_str}")
+        
+        # エラー情報を一時ファイルに保存（デバッグ用）
+        try:
+            import json
+            temp_dir = Path(os.getenv('TEMP', '/tmp'))
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            error_file = temp_dir / f'menu_update_error_{timestamp}.json'
+            with open(error_file, 'w', encoding='utf-8') as f:
+                json.dump(error_info, f, ensure_ascii=False, indent=2)
+            print(f"エラー情報を保存しました: {error_file}")
+        except:
+            pass
+            
         return None
 
 def generate_menu_image_output(input_file: str, output_file: str = None):
