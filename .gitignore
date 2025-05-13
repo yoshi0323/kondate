@@ -30,8 +30,10 @@ ENV/
 .vscode/
 
 # Environment variables
-.env
-.streamlit/secrets.toml
-src/.streamlit/secrets.toml
+# 一時的にコメントアウト（Streamlitデプロイのため）
+# .env
+# .streamlit/secrets.toml
+# src/.streamlit/secrets.toml
+# C:\Users\user\menu01\menu\.streamlit\secrets.toml
 
 
