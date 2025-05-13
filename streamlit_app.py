@@ -12,8 +12,16 @@ import io
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-# APIキーを環境変数に設定
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBN4UbkChLqKMVDNKIvJP8m-aQkqM3rPEg"
+# APIキーを環境変数に設定（Streamlit CloudではSecretsから取得）
+if hasattr(st, 'secrets') and "GOOGLE_API_KEY" in st.secrets:
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    os.environ["GOOGLE_API_KEY"] = api_key
+    print(f"APIキーをSecretsから設定しました（長さ: {len(api_key)}）")
+else:
+    # デフォルトのキー（セキュリティ上良くないが、ローカル開発用）
+    default_key = "AIzaSyBN4UbkChLqKMVDNKIvJP8m-aQkqM3rPEg"
+    os.environ["GOOGLE_API_KEY"] = default_key
+    print(f"デフォルトのAPIキーを使用します（長さ: {len(default_key)}）")
 
 # アプリのタイトルを設定
 st.set_page_config(
@@ -583,6 +591,30 @@ st.sidebar.write("""
 - 予算制約内（200〜300円/食）での実現性
 - 様々な食事パターンや好みに対応
 """)
+
+# APIキー情報をサイドバーに表示
+with st.sidebar:
+    with st.expander("APIキー設定状況"):
+        if "GOOGLE_API_KEY" in os.environ and os.environ["GOOGLE_API_KEY"]:
+            api_key = os.environ["GOOGLE_API_KEY"]
+            st.success("APIキーが設定されています")
+            st.write(f"APIキーの長さ: {len(api_key)}文字")
+            st.write(f"先頭7文字: {api_key[:7]}...")
+            
+            # APIキーのテスト
+            if st.button("APIキーをテスト"):
+                with st.spinner("APIキーをテスト中..."):
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        response = model.generate_content("Hello, are you working?")
+                        st.success(f"APIテスト成功: {response.text[:50]}...")
+                    except Exception as e:
+                        st.error(f"APIテスト失敗: {str(e)}")
+        else:
+            st.error("APIキーが設定されていません")
+            st.write("StreamlitのSecretsまたは.envファイルでAPIキーを設定してください")
 
 # 区切り線で明確に分離
 st.markdown("---")
