@@ -37,8 +37,21 @@ st.set_page_config(
         'About': """
         © 2025 給食AI自動生成システム - 献立作成支援ツール
         """
-    }
+    },
+    # トラッキングを無効化
+    initial_sidebar_state="collapsed"
 )
+
+# トラッキング防止の設定
+# https://docs.streamlit.io/library/advanced-features/configuration
+if hasattr(st, 'secrets') and 'general' in st.secrets:
+    # すでに.streamlit/secrets.tomlに設定がある場合は使用
+    print("設定済みのトラッキング設定を使用します")
+else:
+    # トラッキングとテレメトリを無効化
+    import os
+    os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
+    print("プログラム内でトラッキングを無効化しました")
 
 # カスタムCSS - アドブロッカーの警告を非表示にする
 st.markdown("""
@@ -111,7 +124,7 @@ with tab1:
                                 retry_col1, retry_col2 = st.columns([1,3])
                                 with retry_col1:
                                     if st.button("再試行", key="retry_update"):
-                                        st.experimental_rerun()
+                                        st.rerun()
                                 with retry_col2:
                                     st.write("ファイルのフォーマットが正しいことを確認してください。入力ファイルは最新の形式である必要があります。")
                         
@@ -734,6 +747,75 @@ st.sidebar.write("""
 # 区切り線で明確に分離
 st.markdown("---")
 
+def get_nutritionist_response(prompt, message_history):
+    """栄養士の応答を生成する関数"""
+    # APIキーが存在するか確認
+    import os
+    from menu_updater import GOOGLE_API_KEY
+    
+    if not GOOGLE_API_KEY:
+        print("APIキーが見つかりません")
+        return "申し訳ありません。API設定が見つかりません。管理者にお問い合わせください。"
+    
+    # デバッグ情報（APIキーの先頭と末尾のみ表示して安全性を確保）
+    key_prefix = GOOGLE_API_KEY[:5] if len(GOOGLE_API_KEY) > 5 else "短すぎます"
+    key_suffix = GOOGLE_API_KEY[-5:] if len(GOOGLE_API_KEY) > 5 else "短すぎます"
+    print(f"APIキーが見つかりました: {key_prefix}...{key_suffix}")
+    
+    # 会話履歴をコンテキストとして使用
+    context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in message_history])
+    
+    # 栄養士の基本的な応答パターン
+    system_prompt = """
+    あなたは熟練した栄養士の山田です。献立や栄養に関する質問に日本語で丁寧に回答してください。
+    回答は科学的事実に基づいたものにし、簡潔かつわかりやすく説明してください。
+    """
+    
+    try:
+        # Geminiモデルを使用
+        import google.generativeai as genai
+        import traceback
+        
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        try:
+            response = model.generate_content(
+                f"{system_prompt}\n\n会話履歴:\n{context}\n\n質問: {prompt}\n栄養士の回答:"
+            )
+            
+            answer = response.text.strip()
+            
+            # デバッグ情報
+            print(f"APIレスポンス: {answer[:50]}...")
+            
+            return answer
+        
+        except genai.types.generation_types.StopCandidateException as e:
+            print(f"安全フィルターによるブロック: {e}")
+            return "申し訳ありません。この質問にはお答えできません。別の質問をお願いします。"
+            
+    except Exception as e:
+        traceback.print_exc()
+        print(f"LLM APIエラー詳細: {type(e).__name__}: {e}")
+        
+        # エラーメッセージを詳細に
+        error_msg = str(e)
+        if "API_KEY_INVALID" in error_msg:
+            print("APIキーが無効です。キーを確認してください。")
+            return "申し訳ありません。APIキーの設定に問題があるため、現在サービスをご利用いただけません。管理者に連絡してください。"
+        elif "PERMISSION_DENIED" in error_msg:
+            print("APIの権限がありません。プロジェクト設定を確認してください。")
+            return "申し訳ありません。APIの権限設定に問題があります。管理者に連絡してください。"
+        else:
+            # フォールバック応答
+            return f"申し訳ありません。現在システムの調子が良くないようです。しばらく時間をおいてから再度お試しください。(エラー種類: {type(e).__name__})"
+
+# 元の関数を置き換え
+import sys
+import menu_updater
+menu_updater.get_nutritionist_response = get_nutritionist_response
+
 def render_nutritionist_chat():
     """栄養士チャット機能を表示する独立した関数"""
     st.header("👩‍⚕️ 栄養士に質問してみましょう")
@@ -814,7 +896,7 @@ def render_nutritionist_chat():
             st.session_state.messages.append({"role": "user", "content": user_message})
             
             # 直ちに再描画して質問を表示
-            st.experimental_rerun()
+            st.rerun()
     
     # 応答を生成する関数（別のところで呼び出す）
     def generate_response():
@@ -834,7 +916,7 @@ def render_nutritionist_chat():
                 st.session_state.generating_response = False
                 
                 # 再描画
-                st.experimental_rerun()
+                st.rerun()
     
     # 送信ボタン
     with col2:

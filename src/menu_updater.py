@@ -39,7 +39,22 @@ else:
         load_dotenv(project_env_path)
 
 # Gemini APIキーを設定
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+try:
+    # Streamlitアプリの場合はst.secretsからAPIキーを取得
+    import streamlit as st
+    GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv('GOOGLE_API_KEY'))
+    print("Streamlit Secretsから設定を読み込みました")
+except:
+    # 通常の環境変数からAPIキーを取得
+    GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+    print(".envファイルから設定を読み込みました")
+
+# APIキーの有無を確認
+if not GOOGLE_API_KEY:
+    print("警告: Google API Keyが設定されていません")
+else:
+    print("Google API Keyが正常に設定されました")
+
 genai.configure(api_key=GOOGLE_API_KEY)
 
 def load_nutrition_data():
@@ -1889,9 +1904,23 @@ def reorder_with_llm(all_meals, all_nutrition, strategy, target_weekday=None, ta
         }}
         """
         
+        # デバッグ出力を追加
+        print("=== LLM呼び出し開始 ===")
+        print(f"APIキー: {GOOGLE_API_KEY[:4]}...{GOOGLE_API_KEY[-4:] if len(GOOGLE_API_KEY) > 8 else '***'}")
+        print(f"対象日数: {len(all_meals)}日分")
+        print(f"開始日: {list(all_meals.keys())[0]}")
+        
         # LLMでの処理
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        try:
+            print("Geminiモデルを初期化します...")
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            print("Geminiモデルへのリクエストを実行します...")
+            response = model.generate_content(prompt)
+            print("Geminiモデルからの応答を受信しました")
+        except Exception as llm_error:
+            print(f"LLM呼び出しエラー: {str(llm_error)}")
+            print("フォールバックメニューを使用します")
+            return create_fallback_menu(date_infos)
         
         # 応答をパース
         try:
@@ -2348,6 +2377,12 @@ def generate_weekly_menu(days, params):
         【日程】
         {formatted_displays}
         
+        【重要な指示】
+        - 各日のメニューは必ず異なる料理にしてください。同じ日のメニューを別の日に使いまわさないでください。
+        - 曜日ごとに異なる特徴を持たせてください（例：月曜日は和食、水曜日は魚料理が中心など）
+        - 一週間を通じて料理のバリエーションを豊かにし、同じ主菜や主食が繰り返し出現しないようにしてください
+        - 栄養バランスを考慮しつつ、メニューの多様性を保ってください
+        
         【出力内容】
         各日の朝食・昼食・夕食のメニュー項目と、それぞれの料理に必要な1人分の食材量、および栄養情報
         """
@@ -2418,6 +2453,8 @@ def generate_weekly_menu(days, params):
         - ingredients部分は二重の辞書構造になるようにしてください
         - 正しくない例: "昼食": {"ご飯": "チキンカツ", "ポテトサラダ", "キャベツの浅漬け"}
         - 正しい例: "昼食": ["ご飯", "チキンカツ", "ポテトサラダ", "キャベツの浅漬け"]
+        - 各日付には必ず異なるメニューを用意してください。同じメニューを別の日にコピー&ペーストしないでください。
+        - すべての日付で献立の内容を変えてください。週を通して各日のメニューに多様性を持たせてください。
         
         最終的な形式はコードブロックで囲ってください: ```json ... ```
         出力の最初と最後に説明文を入れないでください。JSON以外の文字は含めないでください。
@@ -2426,9 +2463,23 @@ def generate_weekly_menu(days, params):
         # 完全なプロンプトの組み立て
         complete_prompt = prompt_header + prompt_format + sample_json + prompt_footer
         
+        # デバッグ出力を追加
+        print("=== LLM呼び出し開始 ===")
+        print(f"APIキー: {GOOGLE_API_KEY[:4]}...{GOOGLE_API_KEY[-4:] if len(GOOGLE_API_KEY) > 8 else '***'}")
+        print(f"対象日数: {days}日分")
+        print(f"開始日: {start_date}")
+        
         # LLMでの処理
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(complete_prompt)
+        try:
+            print("Geminiモデルを初期化します...")
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            print("Geminiモデルへのリクエストを実行します...")
+            response = model.generate_content(complete_prompt)
+            print("Geminiモデルからの応答を受信しました")
+        except Exception as llm_error:
+            print(f"LLM呼び出しエラー: {str(llm_error)}")
+            print("フォールバックメニューを使用します")
+            return create_fallback_menu(date_infos)
         
         # 応答をパース
         try:
@@ -2623,37 +2674,81 @@ def generate_weekly_menu(days, params):
 def create_fallback_menu(date_infos):
     """エラー時のフォールバックメニューを生成する関数"""
     fallback_data = {}
-    for date_info in date_infos:
+    
+    # 曜日に応じたメニューバリエーション
+    menu_variations = {
+        "月曜日": {
+            "朝食": ["米飯", "納豆", "ほうれん草のおひたし", "味噌汁", "りんご"],
+            "昼食": ["パン", "クリームシチュー", "グリーンサラダ", "コンソメスープ", "ヨーグルト"],
+            "夕食": ["米飯", "鮭の塩焼き", "切り干し大根", "すまし汁", "みかん"]
+        },
+        "火曜日": {
+            "朝食": ["食パン", "スクランブルエッグ", "ミニサラダ", "コーンスープ", "バナナ"],
+            "昼食": ["炊き込みご飯", "豚の生姜焼き", "キャベツの浅漬け", "味噌汁", "ぶどう"],
+            "夕食": ["麦飯", "カレイの煮付け", "ひじきの煮物", "かきたま汁", "プリン"]
+        },
+        "水曜日": {
+            "朝食": ["おかゆ", "卵豆腐", "小松菜のお浸し", "味噌汁", "オレンジ"],
+            "昼食": ["うどん", "天ぷら", "白菜の漬物", "フルーツヨーグルト"],
+            "夕食": ["米飯", "ハンバーグ", "ポテトサラダ", "野菜スープ", "ゼリー"]
+        },
+        "木曜日": {
+            "朝食": ["米飯", "焼き魚", "わかめサラダ", "味噌汁", "キウイフルーツ"],
+            "昼食": ["ちらし寿司", "茶碗蒸し", "おすまし", "いちご"],
+            "夕食": ["米飯", "豆腐ハンバーグ", "ブロッコリーのサラダ", "けんちん汁", "ヨーグルト"]
+        },
+        "金曜日": {
+            "朝食": ["パン", "ゆで卵", "マカロニサラダ", "野菜ジュース", "みかん"],
+            "昼食": ["カレーライス", "福神漬け", "コールスローサラダ", "フルーツポンチ"],
+            "夕食": ["米飯", "さばの味噌煮", "筑前煮", "すまし汁", "プリン"]
+        },
+        "土曜日": {
+            "朝食": ["米飯", "だし巻き卵", "ほうれん草のごま和え", "味噌汁", "バナナ"],
+            "昼食": ["スパゲッティ", "ガーリックトースト", "コンソメスープ", "フルーツヨーグルト"],
+            "夕食": ["米飯", "鶏の唐揚げ", "春雨サラダ", "中華スープ", "アイスクリーム"]
+        },
+        "日曜日": {
+            "朝食": ["パン", "ウインナー", "サラダ", "野菜スープ", "りんご"],
+            "昼食": ["チャーハン", "春巻き", "中華スープ", "フルーツ盛り合わせ"],
+            "夕食": ["米飯", "すき焼き", "酢の物", "味噌汁", "杏仁豆腐"]
+        }
+    }
+    
+    # 食材情報のテンプレート
+    ingredients_template = {
+        "米飯": {"米": "80g", "塩": "0.5g"},
+        "パン": {"食パン": "1枚"},
+        "味噌汁": {"豆腐": "30g", "わかめ": "3g", "だし": "100ml", "味噌": "8g"},
+        "すまし汁": {"豆腐": "20g", "わかめ": "3g", "だし": "100ml", "醤油": "3g"},
+        "サラダ": {"レタス": "30g", "トマト": "20g", "きゅうり": "20g", "ドレッシング": "5g"}
+    }
+    
+    # 日付ごとにメニューを生成
+    for i, date_info in enumerate(date_infos):
         date_key = date_info['date']
+        weekday = date_info.get('weekday', ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日'][i % 7])
+        
+        # 曜日に応じたメニューがあればそれを使用、なければデフォルト
+        if weekday in menu_variations:
+            day_meals = menu_variations[weekday]
+        else:
+            # デフォルトメニュー(月曜日メニューを使用)
+            day_meals = menu_variations["月曜日"]
+        
+        # 食材情報を構築
+        ingredients = {}
+        for meal_type, items in day_meals.items():
+            ingredients[meal_type] = {}
+            for item in items:
+                if item in ingredients_template:
+                    ingredients[meal_type][item] = ingredients_template[item]
+                else:
+                    ingredients[meal_type][item] = {"材料情報なし": "適量"}
+        
+        # 日付データに追加
         fallback_data[date_key] = {
-            "meals": {
-                "朝食": ["米飯", "焼き魚", "野菜サラダ", "味噌汁", "フルーツ"],
-                "昼食": ["パン", "シチュー", "サラダ", "スープ", "ヨーグルト"],
-                "夕食": ["米飯", "煮魚", "お浸し", "すまし汁", "デザート"]
-            },
-            "ingredients": {
-                "朝食": {
-                    "米飯": {"米": "80g", "塩": "0.5g"},
-                    "焼き魚": {"魚": "60g", "塩": "1g"},
-                    "野菜サラダ": {"レタス": "30g", "トマト": "20g", "きゅうり": "20g", "ドレッシング": "5g"},
-                    "味噌汁": {"豆腐": "30g", "わかめ": "3g", "だし": "100ml", "味噌": "8g"},
-                    "フルーツ": {"バナナ": "半分"}
-                },
-                "昼食": {
-                    "パン": {"食パン": "1枚"},
-                    "シチュー": {"じゃがいも": "40g", "にんじん": "20g", "玉ねぎ": "30g", "鶏肉": "30g", "牛乳": "80ml", "ルウ": "15g"},
-                    "サラダ": {"キャベツ": "40g", "コーン": "10g", "マヨネーズ": "5g"},
-                    "スープ": {"コンソメ": "5g", "水": "150ml", "具材": "20g"},
-                    "ヨーグルト": {"プレーンヨーグルト": "100g", "蜂蜜": "5g"}
-                },
-                "夕食": {
-                    "米飯": {"米": "80g", "塩": "0.5g"},
-                    "煮魚": {"魚": "60g", "醤油": "5g", "砂糖": "3g", "酒": "5ml"},
-                    "お浸し": {"ほうれん草": "50g", "醤油": "3g", "かつお節": "1g"},
-                    "すまし汁": {"豆腐": "20g", "わかめ": "3g", "だし": "100ml", "醤油": "3g"},
-                    "デザート": {"フルーツ": "適量"}
-                }
-            },
+            "meals": day_meals,
+            "ingredients": ingredients,
             "nutrition": {
                 "カロリー": "1800kcal",
                 "タンパク質": "75g",
@@ -2662,6 +2757,7 @@ def create_fallback_menu(date_infos):
                 "塩分": "7.5g"
             }
         }
+    
     return fallback_data
 
 # 献立並び替え関数の追加（未定義エラーを解消）
