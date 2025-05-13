@@ -147,7 +147,7 @@ with tab1:
                                         valid_sheets = []
                                         invalid_sheets = []
                                         for sheet_name in df_dict.keys():
-                                            match = re.search(r'(\d+)月(\d+)日', sheet_name)
+                                            match = re.search(r'(\d+)月(\d+)日(?:\(.\))?', sheet_name)
                                             if match:
                                                 valid_sheets.append(sheet_name)
                                             else:
